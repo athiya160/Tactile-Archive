@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+  <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="new_flutter">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>new_flutter</title>
+  <link rel="manifest" href="manifest.json">
+  <!-- Google Identity Services (GIS) Web SDK -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <!-- Google Sign-In Web Client ID (Google Identity Services) -->
+  <meta name="google-signin-client_id" content="tactile-archive-web-client-id.apps.googleusercontent.com">
+  <!-- Web Fonts Preconnect & Stylesheets -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700;800&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- Razorpay Web SDK -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
+  <script>
+    window.payWithRazorpay = function(optionsJson, callback) {
+      try {
+        var options = JSON.parse(optionsJson);
+        if (typeof window.Razorpay === 'undefined') {
+          callback(JSON.stringify({status: 'error', message: 'Razorpay SDK failed to load.'}));
+          return;
+        }
+        options.handler = function(response) {
+          callback(JSON.stringify({
+            status: 'success',
+            paymentId: response.razorpay_payment_id || '',
+            orderId: response.razorpay_order_id || options.order_id || '',
+            signature: response.razorpay_signature || ''
+          }));
+        };
+        options.modal = {
+          ondismiss: function() {
+            callback(JSON.stringify({status: 'cancelled', message: 'Payment cancelled by user'}));
+          }
+        };
+        var rzp = new window.Razorpay(options);
+        rzp.on('payment.failed', function(resp) {
+          var msg = (resp && resp.error && resp.error.description) ? resp.error.description : 'Payment failed';
+          callback(JSON.stringify({status: 'failed', message: msg}));
+        });
+        rzp.open();
+      } catch (err) {
+        callback(JSON.stringify({status: 'error', message: err.toString()}));
+      }
+    };
+  </script>
+</head>
+<body>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script>
+    {{flutter_js}}
+    {{flutter_build_config}}
+
+    _flutter.loader.load({
+      config: {
+        canvasKitBaseUrl: "canvaskit/",
+      },
+    });
+  </script>
+</body>
+</html>

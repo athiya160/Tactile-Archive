@@ -1,0 +1,115 @@
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+import os
+from typing import List
+
+from app.core.database import SessionLocal
+from app.api.auth import get_current_user
+from app.models.user import User
+from app.core.storage import upload_image_to_s3
+from app.core.upload_security import (
+    MAX_FILE_SIZE,
+    read_bounded_file,
+    validate_image_bytes,
+    generate_secure_storage_filename,
+    resolve_safe_local_path,
+    get_storage_status,
+)
+
+router = APIRouter()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+UPLOAD_DIR = "images"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@router.get("/uploads/storage-status")
+def check_storage_status(user: User = Depends(get_current_user)):
+    """
+    Returns the current storage subsystem status, diagnosing whether media
+    is stored persistently in AWS S3 or on ephemeral container local disk.
+    """
+    return get_storage_status()
+
+@router.post("/uploads/image")
+async def upload_image(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user)
+):
+    """
+    Secure single-image upload endpoint.
+    - Enforces bounded streaming read (max 5MB)
+    - Validates magic bytes signature (JPEG, PNG, WEBP, GIF, HEIC)
+    - Parses structure via Pillow to detect corruption/malformation
+    - Verifies extension alignment with detected content
+    - Generates server-controlled UUID storage filename
+    - Uploads to AWS S3 if configured; otherwise writes to safe local path
+    """
+    contents = await read_bounded_file(file, max_size=MAX_FILE_SIZE)
+    sig_format, canonical_ext, mime_type = validate_image_bytes(
+        contents,
+        client_filename=file.filename,
+        client_mime_type=file.content_type
+    )
+    
+    filename = generate_secure_storage_filename(canonical_ext)
+    
+    # 1. Try AWS S3 Upload
+    s3_url = upload_image_to_s3(contents, filename, mime_type)
+    if s3_url:
+        return {"url": s3_url}
+        
+    # 2. Safe Local Storage Fallback
+    safe_path = resolve_safe_local_path(filename, UPLOAD_DIR)
+    with open(safe_path, "wb") as buffer:
+        buffer.write(contents)
+        
+    base_url = str(request.base_url).rstrip("/")
+    file_url = f"{base_url}/images/{filename}"
+    return {"url": file_url}
+
+@router.post("/uploads/book-images")
+async def upload_book_images(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    user: User = Depends(get_current_user)
+):
+    """
+    Secure batch-image upload endpoint for book covers and photos.
+    Validates each file independently with full signature, parser, and size bounds.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+        
+    urls = []
+    for file in files:
+        contents = await read_bounded_file(file, max_size=MAX_FILE_SIZE)
+        sig_format, canonical_ext, mime_type = validate_image_bytes(
+            contents,
+            client_filename=file.filename,
+            client_mime_type=file.content_type
+        )
+        
+        filename = generate_secure_storage_filename(canonical_ext)
+        
+        # 1. Try AWS S3 Upload
+        s3_url = upload_image_to_s3(contents, filename, mime_type)
+        if s3_url:
+            urls.append(s3_url)
+        else:
+            # 2. Safe Local Storage Fallback
+            safe_path = resolve_safe_local_path(filename, UPLOAD_DIR)
+            with open(safe_path, "wb") as buffer:
+                buffer.write(contents)
+                
+            base_url = str(request.base_url).rstrip("/")
+            urls.append(f"{base_url}/images/{filename}")
+            
+    return {"urls": urls}

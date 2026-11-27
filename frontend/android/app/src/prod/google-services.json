@@ -1,0 +1,35 @@
+{
+  "project_info": {
+    "project_number": "987654321098",
+    "project_id": "tactile-archive-prod",
+    "storage_bucket": "tactile-archive-prod.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:987654321098:android:abcdef9876543210",
+        "android_client_info": {
+          "package_name": "com.tactilearchive.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "tactile-archive-prod-android-client-id.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tactilearchive.app"
+          }
+        },
+        {
+          "client_id": "tactile-archive-prod-web-client-id.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyProdPlaceholderKey9876543210"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1222 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
+import '../../../../core/services/api_service.dart';
+import '../../../../core/services/google_auth_service.dart';
+import '../../../../core/tokens/app_tokens.dart';
+import '../../../../core/design_system/design_system.dart';
+
+class RegisterPage extends StatefulWidget {
+  final UserRole role;
+  final UserType? persona;
+  const RegisterPage({super.key, this.role = UserRole.customer, this.persona});
+
+  @override
+  State<RegisterPage> createState() => _RegisterPageState();
+}
+
+class _RegisterPageState extends State<RegisterPage> with TickerProviderStateMixin {
+  // Step 1: Experience Selection, Step 2: Account Registration Details
+  int _currentStep = 1;
+
+  // Selected Experience & Role
+  late UserRole _selectedRole;
+  UserType _selectedExperience = UserType.reader;
+  bool _enableLendingAlso = false;
+
+  // Shared Account Registration Form Fields
+  final _formKey = GlobalKey<FormState>();
+  final _nameCtrl = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
+  final _confirmPasswordCtrl = TextEditingController();
+  bool _acceptTerms = false;
+  String? _termsError;
+
+  // Optional Student Academic Details
+  final _collegeCtrl = TextEditingController();
+  final _courseCtrl = TextEditingController();
+  final _semesterCtrl = TextEditingController();
+  final _gradYearCtrl = TextEditingController();
+  final _syllabusCtrl = TextEditingController();
+
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+  bool _obscureConfirm = true;
+  double _passwordStrength = 0;
+
+  late AnimationController _fadeCtrl;
+  late Animation<double> _fadeAnim;
+  late AnimationController _slideCtrl;
+  late Animation<Offset> _slideAnim;
+
+  static const Color _primary = DSColors.deepForestGreen;
+  static const Color _gold = DSColors.antiqueGold;
+  static const Color _terracotta = DSColors.mutedTerracotta;
+  static const Color _bg = DSColors.warmIvory;
+  static const Color _surface = DSColors.paperWhite;
+  static const Color _textDark = DSColors.charcoal;
+  static const Color _textLight = DSColors.textMuted;
+  static const Curve _transitionCurve = Cubic(0.25, 0.8, 0.25, 1);
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedRole = widget.role;
+    if (_selectedRole == UserRole.provider) {
+      _currentStep = 2; // Jump directly to registration form if provider role was preselected
+    } else if (widget.persona != null) {
+      _selectedExperience = widget.persona!;
+      _currentStep = 2; // Jump directly to registration form if persona was preselected
+    } else {
+      _selectedExperience = UserType.student; // Default recommendation
+    }
+
+    _fadeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _fadeAnim = CurvedAnimation(parent: _fadeCtrl, curve: _transitionCurve);
+    _slideCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
+    _slideAnim = Tween<Offset>(
+      begin: const Offset(0, 0.04),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _slideCtrl, curve: _transitionCurve));
+
+    _fadeCtrl.forward();
+    _slideCtrl.forward();
+
+    _passwordCtrl.addListener(_updatePasswordStrength);
+  }
+
+  void _updatePasswordStrength() {
+    final p = _passwordCtrl.text;
+    double strength = 0;
+    if (p.length >= 8) strength += 0.2;
+    if (p.contains(RegExp(r'[A-Z]'))) strength += 0.2;
+    if (p.contains(RegExp(r'[a-z]'))) strength += 0.2;
+    if (p.contains(RegExp(r'[0-9]'))) strength += 0.2;
+    if (p.contains(RegExp(r'[!@#\$%^&*(),.?":{}|<>\s]'))) strength += 0.2;
+    setState(() => _passwordStrength = strength);
+  }
+
+  @override
+  void dispose() {
+    _fadeCtrl.dispose();
+    _slideCtrl.dispose();
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _phoneCtrl.dispose();
+    _passwordCtrl.dispose();
+    _confirmPasswordCtrl.dispose();
+    _collegeCtrl.dispose();
+    _courseCtrl.dispose();
+    _semesterCtrl.dispose();
+    _gradYearCtrl.dispose();
+    _syllabusCtrl.dispose();
+    super.dispose();
+  }
+
+  Color get _strengthColor {
+    if (_passwordStrength <= 0.25) return AppColors.error;
+    if (_passwordStrength <= 0.5) return const Color(0xFFE67E22);
+    if (_passwordStrength <= 0.75) return const Color(0xFFF1C40F);
+    return const Color(0xFF27AE60);
+  }
+
+  String get _strengthLabel {
+    if (_passwordStrength <= 0.25) return 'Weak';
+    if (_passwordStrength <= 0.5) return 'Fair';
+    if (_passwordStrength <= 0.75) return 'Good';
+    return 'Strong';
+  }
+
+  Future<void> _handleRegister() async {
+    if (!_formKey.currentState!.validate()) return;
+    if (!_acceptTerms) {
+      setState(() => _termsError = 'Please accept the Terms & Privacy Policy to continue.');
+      return;
+    }
+    setState(() {
+      _termsError = null;
+      _isLoading = true;
+    });
+
+    final isProvider = _selectedRole == UserRole.provider || _enableLendingAlso;
+    final effectiveRole = isProvider ? UserRole.provider : UserRole.customer;
+
+    final errorMessage = await ApiService.register(
+      name: _nameCtrl.text.trim(),
+      email: _emailCtrl.text.trim(),
+      password: _passwordCtrl.text.trim(),
+      role: effectiveRole,
+      userType: _selectedRole == UserRole.provider ? UserType.reader : _selectedExperience,
+      activeExperience: _selectedRole == UserRole.provider ? UserType.reader : _selectedExperience,
+      phone: _phoneCtrl.text.trim().isEmpty ? null : _phoneCtrl.text.trim(),
+      college: !isProvider && _selectedExperience == UserType.student && _collegeCtrl.text.trim().isNotEmpty ? _collegeCtrl.text.trim() : null,
+      course: !isProvider && _selectedExperience == UserType.student && _courseCtrl.text.trim().isNotEmpty ? _courseCtrl.text.trim() : null,
+      semester: !isProvider && _selectedExperience == UserType.student && _semesterCtrl.text.trim().isNotEmpty ? _semesterCtrl.text.trim() : null,
+      graduationYear: !isProvider && _selectedExperience == UserType.student && _gradYearCtrl.text.trim().isNotEmpty ? _gradYearCtrl.text.trim() : null,
+      syllabus: !isProvider && _selectedExperience == UserType.student && _syllabusCtrl.text.trim().isNotEmpty ? _syllabusCtrl.text.trim() : null,
+    );
+
+    if (!mounted) return;
+    setState(() => _isLoading = false);
+
+    if (errorMessage == null) {
+      final bool isLoggedIn = ApiService.isLoggedIn;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          backgroundColor: _surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(
+                Icons.check_circle_outline_rounded,
+                color: Color(0xFF27AE60),
+                size: 28,
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  isProvider
+                      ? 'Welcome, Book Provider!'
+                      : (_selectedExperience == UserType.student ? 'Welcome, Scholar!' : 'Welcome, Reader!'),
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.playfairDisplay(fontWeight: FontWeight.w700, color: _primary),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            isLoggedIn
+                ? (isProvider
+                    ? 'Your Provider account is ready. You can now list, lend, sell, and manage physical books in the archive.'
+                    : (_selectedExperience == UserType.student
+                        ? 'Your Student account has been initialized. Ready to explore syllabus textbooks and plan your semester.'
+                        : 'Your Reader account has been created. Ready to discover books and build your bookshelf.'))
+                : 'Registration successful! A verification link has been sent to your email. Please check your inbox to activate your account.',
+            style: GoogleFonts.inter(height: 1.5, color: _textDark),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                if (isLoggedIn) {
+                  if (isProvider) {
+                    context.go('/provider');
+                  } else if (_selectedExperience == UserType.student) {
+                    context.go('/student');
+                  } else {
+                    context.go('/reader');
+                  }
+                } else {
+                  context.go('/login');
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text('Get Started', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bg,
+      body: SafeArea(
+        child: FadeTransition(
+          opacity: _fadeAnim,
+          child: SlideTransition(
+            position: _slideAnim,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isDesktop = constraints.maxWidth > 900;
+
+                return Row(
+                  children: [
+                    // Desktop Editorial Hero Sidebar
+                    if (isDesktop)
+                      Expanded(
+                        flex: 1,
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            color: _primary,
+                            image: DecorationImage(
+                              image: NetworkImage(
+                                'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?q=80&w=1000&auto=format&fit=crop',
+                              ),
+                              fit: BoxFit.cover,
+                              colorFilter: ColorFilter.mode(
+                                Colors.black54,
+                                BlendMode.darken,
+                              ),
+                            ),
+                          ),
+                          child: SingleChildScrollView(
+                            physics: const BouncingScrollPhysics(),
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 48.0,
+                                vertical: isDesktop ? 36.0 : 24.0,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: _gold.withValues(alpha: 0.2),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: _gold.withValues(alpha: 0.5)),
+                                        ),
+                                        child: const Icon(
+                                          Icons.menu_book_rounded,
+                                          color: _gold,
+                                          size: 26,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text(
+                                          'The Tactile Archive',
+                                          style: GoogleFonts.playfairDisplay(
+                                            fontSize: 26,
+                                            fontWeight: FontWeight.w700,
+                                            color: Colors.white,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 28),
+                                  Text(
+                                    'One world.\nDifferent ways to read.',
+                                    style: GoogleFonts.playfairDisplay(
+                                      fontSize: 42,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                      height: 1.15,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'A connected platform uniting academic textbook planning, cozy personal reading, and community book sharing.',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 15,
+                                      color: Colors.white.withValues(alpha: 0.85),
+                                      height: 1.55,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 28),
+                                  _buildSidebarFeaturePill(Icons.school_outlined, 'Student', 'Organize semesters & syllabus tracking'),
+                                  const SizedBox(height: 12),
+                                  _buildSidebarFeaturePill(Icons.auto_stories_outlined, 'Reader', 'Curate your bookshelf & reading goals'),
+                                  const SizedBox(height: 12),
+                                  _buildSidebarFeaturePill(Icons.storefront_outlined, 'Provider', 'List & share physical books seamlessly'),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // Main Interactive Content Area
+                    Expanded(
+                      flex: 1,
+                      child: Center(
+                        child: SingleChildScrollView(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: isDesktop ? 56 : 20,
+                            vertical: 32,
+                          ),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 520),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Top Header Bar
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      tooltip: 'Back',
+                                      onPressed: () {
+                                        if (_currentStep == 2 && widget.persona == null) {
+                                          setState(() => _currentStep = 1);
+                                        } else if (context.canPop()) {
+                                          context.pop();
+                                        } else {
+                                          context.go('/');
+                                        }
+                                      },
+                                      icon: const Icon(Icons.arrow_back, color: _primary),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                    ),
+                                    const Spacer(),
+                                    if (!isDesktop)
+                                      Flexible(
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.menu_book_rounded, color: _gold, size: 20),
+                                            const SizedBox(width: 6),
+                                            Flexible(
+                                              child: Text(
+                                                'The Tactile Archive',
+                                                overflow: TextOverflow.ellipsis,
+                                                style: GoogleFonts.playfairDisplay(
+                                                  fontSize: 17,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: _primary,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 28),
+
+                                // STEP 1: EXPERIENCE SELECTION SCREEN
+                                if (_currentStep == 1)
+                                  _buildStep1ExperienceSelection()
+                                else
+                                  _buildStep2RegistrationForm(),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSidebarFeaturePill(IconData icon, String title, String desc) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: _gold, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13)),
+                Text(desc, style: GoogleFonts.inter(color: Colors.white70, fontSize: 11)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 1: EXPERIENCE SELECTION (PART A)
+  // ──────────────────────────────────────────────────────────────────────────
+  Widget _buildStep1ExperienceSelection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: _primary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            'STEP 1 OF 2 — PERSONALIZED SETUP',
+            style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: _primary, letterSpacing: 0.8),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'How do you want to use The Tactile Archive?',
+          style: GoogleFonts.playfairDisplay(
+            fontSize: 28,
+            fontWeight: FontWeight.w800,
+            color: _primary,
+            height: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Welcome to The Tactile Archive. Choose the experience that suits you. You can change it later in settings.',
+          style: GoogleFonts.inter(fontSize: 14, color: _textLight, height: 1.5),
+        ),
+        const SizedBox(height: 24),
+
+        // CHOICE 1: STUDENT
+        _ExperienceCard(
+          isSelected: _selectedRole != UserRole.provider && _selectedExperience == UserType.student,
+          badgeLabel: 'Study mode',
+          badgeColor: _primary,
+          title: "I'm a Student",
+          icon: Icons.school_rounded,
+          description: 'Discover textbooks, organize semesters, manage syllabus, plan study sessions and track academic reading.',
+          footerTag: 'Student dashboard + marketplace',
+          onTap: () => setState(() {
+            _selectedRole = UserRole.customer;
+            _selectedExperience = UserType.student;
+          }),
+        ),
+        const SizedBox(height: 16),
+
+        // CHOICE 2: READER
+        _ExperienceCard(
+          isSelected: _selectedRole != UserRole.provider && _selectedExperience == UserType.reader,
+          badgeLabel: 'Reading mode',
+          badgeColor: const Color(0xFF2B6CB0),
+          title: "I'm a Reader",
+          icon: Icons.auto_stories_rounded,
+          description: 'Discover books, buy, rent, borrow, save favourites, track reading and explore personalized recommendations.',
+          footerTag: 'Reader dashboard + marketplace',
+          onTap: () => setState(() {
+            _selectedRole = UserRole.customer;
+            _selectedExperience = UserType.reader;
+          }),
+        ),
+        const SizedBox(height: 16),
+
+        // CHOICE 3: PROVIDER / LENDER
+        _ExperienceCard(
+          isSelected: _selectedRole == UserRole.provider,
+          badgeLabel: 'Lending & selling mode',
+          badgeColor: const Color(0xFFB7791F),
+          title: 'I want to sell or lend books',
+          icon: Icons.storefront_rounded,
+          description: 'List books, manage inventory, respond to rental & purchase requests, and track provider activity.',
+          footerTag: 'Provider dashboard + book lending',
+          onTap: () => setState(() => _selectedRole = UserRole.provider),
+        ),
+        const SizedBox(height: 28),
+
+        // CONTINUE BUTTON
+        SizedBox(
+          width: double.infinity,
+          height: 48,
+          child: ElevatedButton(
+            onPressed: () => setState(() => _currentStep = 2),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _primary,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DSRadius.md)),
+            ),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _selectedRole == UserRole.provider
+                        ? 'Continue to Lender Signup'
+                        : (_selectedExperience == UserType.student ? 'Continue to Student Signup' : 'Continue to Reader Signup'),
+                    style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(Icons.arrow_forward_rounded, size: 18),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+
+        // SIGN IN LINK
+        Center(
+          child: GestureDetector(
+            onTap: () => context.push('/login'),
+            child: RichText(
+              text: TextSpan(
+                text: 'Already have an account? ',
+                style: GoogleFonts.inter(color: _textLight, fontSize: 14),
+                children: [
+                  TextSpan(
+                    text: 'Sign In',
+                    style: GoogleFonts.inter(
+                      color: _primary,
+                      fontWeight: FontWeight.bold,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STEP 2: REGISTRATION FORM (SHARED + OPTIONAL STUDENT DETAILS)
+  // ──────────────────────────────────────────────────────────────────────────
+  Widget _buildStep2RegistrationForm() {
+    final isProvider = _selectedRole == UserRole.provider;
+    final isStudent = !isProvider && _selectedExperience == UserType.student;
+
+    final Color badgeColor = isProvider
+        ? const Color(0xFFB7791F)
+        : (isStudent ? _primary : const Color(0xFF2B6CB0));
+    final IconData badgeIcon = isProvider
+        ? Icons.storefront_rounded
+        : (isStudent ? Icons.school_rounded : Icons.auto_stories_rounded);
+    final String badgeText = isProvider
+        ? 'Experience: Book Provider (Lender / Seller)'
+        : (isStudent ? 'Experience: Student (Study Mode)' : 'Experience: Reader (Reading Mode)');
+
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Selected Experience Pill & Switcher
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: badgeColor.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  badgeIcon,
+                  size: 18,
+                  color: badgeColor,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    badgeText,
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: badgeColor,
+                    ),
+                  ),
+                ),
+                InkWell(
+                  onTap: () => setState(() => _currentStep = 1),
+                  child: Text(
+                    'Change',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: _terracotta,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          Text(
+            isProvider ? 'Create Provider Account' : 'Create your Account',
+            style: GoogleFonts.playfairDisplay(
+              fontSize: 28,
+              fontWeight: FontWeight.w800,
+              color: _primary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isProvider
+                ? 'List books, manage inventory, and fulfill book rental and purchase requests.'
+                : (isStudent
+                    ? 'Discover textbooks, manage syllabus, and track academic deadlines.'
+                    : 'Discover, borrow, rent, buy, and save physical books in the archive.'),
+            style: GoogleFonts.inter(fontSize: 13, color: _textLight),
+          ),
+          const SizedBox(height: 20),
+
+          // Google Sign-In Quick Option
+          GoogleSignInButton(
+            label: 'Continue with Google',
+            isLoading: _isLoading,
+            onPressed: () async {
+              setState(() => _isLoading = true);
+              await GoogleAuthService.signInWithGoogle(
+                context,
+                personaHint: isProvider ? 'provider' : (isStudent ? 'student' : 'reader'),
+              );
+              if (mounted) setState(() => _isLoading = false);
+            },
+          ),
+          const SizedBox(height: 18),
+
+          Row(
+            children: [
+              const Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text('or register with email', style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFFA0AEC0))),
+              ),
+              const Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+            ],
+          ),
+          const SizedBox(height: 18),
+
+          // ─── SHARED FORM FIELDS (Both Student and Reader) ───
+          _RegisterField(
+            controller: _nameCtrl,
+            label: 'Full Name *',
+            icon: Icons.person_outline_rounded,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Please enter your full name';
+              if (v.trim().length < 2) return 'Name is too short';
+              return null;
+            },
+          ),
+          const SizedBox(height: 14),
+
+          _RegisterField(
+            controller: _emailCtrl,
+            label: 'Email Address *',
+            icon: Icons.email_outlined,
+            keyboardType: TextInputType.emailAddress,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Please enter your email address';
+              final emailRegex = RegExp(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$");
+              if (!emailRegex.hasMatch(v.trim())) return 'Please enter a valid email address';
+              return null;
+            },
+          ),
+          const SizedBox(height: 14),
+
+          _RegisterField(
+            controller: _phoneCtrl,
+            label: 'Mobile Number *',
+            icon: Icons.phone_outlined,
+            keyboardType: TextInputType.phone,
+            validator: (v) {
+              if (v == null || v.trim().isEmpty) return 'Please enter your mobile number';
+              final digits = v.replaceAll(RegExp(r'[^0-9]'), '');
+              if (digits.length < 10) return 'Please enter a valid 10-digit mobile number';
+              return null;
+            },
+          ),
+          const SizedBox(height: 14),
+
+          _RegisterField(
+            controller: _passwordCtrl,
+            label: 'Password *',
+            icon: Icons.lock_outline_rounded,
+            obscureText: _obscurePassword,
+            suffixIcon: IconButton(
+              tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+              icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: _textLight, size: 20),
+              onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+            ),
+            validator: (v) {
+              if (v == null || v.isEmpty) return 'Please enter a password';
+              if (v.length < 8) return 'Password must be at least 8 characters';
+              if (!RegExp(r'[A-Z]').hasMatch(v)) return 'Must contain at least 1 uppercase letter';
+              if (!RegExp(r'[a-z]').hasMatch(v)) return 'Must contain at least 1 lowercase letter';
+              if (!RegExp(r'[0-9]').hasMatch(v)) return 'Must contain at least 1 number';
+              if (!RegExp(r'[!@#\$%^&*(),.?":{}|<>\s]').hasMatch(v)) return 'Must contain at least 1 special character';
+              return null;
+            },
+          ),
+          if (_passwordCtrl.text.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: _passwordStrength,
+                      minHeight: 4,
+                      backgroundColor: const Color(0xFFEDF2F7),
+                      valueColor: AlwaysStoppedAnimation<Color>(_strengthColor),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(_strengthLabel, style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold, color: _strengthColor)),
+              ],
+            ),
+          ],
+          const SizedBox(height: 14),
+
+          _RegisterField(
+            controller: _confirmPasswordCtrl,
+            label: 'Confirm Password *',
+            icon: Icons.lock_outline_rounded,
+            obscureText: _obscureConfirm,
+            suffixIcon: IconButton(
+              tooltip: _obscureConfirm ? 'Show password' : 'Hide password',
+              icon: Icon(_obscureConfirm ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: _textLight, size: 20),
+              onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+            ),
+            validator: (v) {
+              if (v == null || v.isEmpty) return 'Please confirm your password';
+              if (v != _passwordCtrl.text) return 'Passwords do not match';
+              return null;
+            },
+          ),
+          const SizedBox(height: 20),
+
+          // ─── STUDENT-SPECIFIC ONBOARDING DETAILS (Optional) ───
+          if (isStudent) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7FAFC),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _primary.withValues(alpha: 0.15)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.school_outlined, color: _primary, size: 20),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Academic Details (Optional)',
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.bold, color: _primary),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Complete these now or update your profile later from settings.',
+                    style: GoogleFonts.inter(fontSize: 12, color: _textLight),
+                  ),
+                  const SizedBox(height: 14),
+                  _RegisterField(
+                    controller: _collegeCtrl,
+                    label: 'College or University (optional)',
+                    icon: Icons.account_balance_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  _RegisterField(
+                    controller: _courseCtrl,
+                    label: 'Course or Degree (e.g. Computer Science, MCA)',
+                    icon: Icons.menu_book_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _RegisterField(
+                          controller: _semesterCtrl,
+                          label: 'Current Semester / Year',
+                          icon: Icons.calendar_month_outlined,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _RegisterField(
+                          controller: _gradYearCtrl,
+                          label: 'Graduation Year',
+                          icon: Icons.event_available_outlined,
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _RegisterField(
+                    controller: _syllabusCtrl,
+                    label: 'Subjects or Syllabus details (optional)',
+                    icon: Icons.note_alt_outlined,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Provider lending mode option for student/reader signups
+          if (!isProvider) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7FAFC),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: Checkbox(
+                      value: _enableLendingAlso,
+                      activeColor: const Color(0xFFB7791F),
+                      onChanged: (val) => setState(() => _enableLendingAlso = val ?? false),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Also enable book lending & selling mode',
+                          style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: _textDark),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Unlock provider dashboard to list physical books alongside your account.',
+                          style: GoogleFonts.inter(fontSize: 11, color: _textLight),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // Terms and Privacy Policy acceptance checkbox
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: Checkbox(
+                  value: _acceptTerms,
+                  activeColor: _primary,
+                  onChanged: (val) => setState(() {
+                    _acceptTerms = val ?? false;
+                    if (_acceptTerms) _termsError = null;
+                  }),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Wrap(
+                  children: [
+                    Text('I accept the ', style: GoogleFonts.inter(fontSize: 13, color: _textDark)),
+                    GestureDetector(
+                      onTap: () => context.push('/terms-and-conditions'),
+                      child: Text('Terms & Conditions', style: GoogleFonts.inter(fontSize: 13, color: _primary, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
+                    ),
+                    Text(' and ', style: GoogleFonts.inter(fontSize: 13, color: _textDark)),
+                    GestureDetector(
+                      onTap: () => context.push('/privacy-policy'),
+                      child: Text('Privacy Policy', style: GoogleFonts.inter(fontSize: 13, color: _primary, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (_termsError != null) ...[
+            const SizedBox(height: 6),
+            Text(_termsError!, style: GoogleFonts.inter(fontSize: 12, color: AppColors.error)),
+          ],
+          const SizedBox(height: 24),
+
+          // SUBMIT REGISTRATION BUTTON
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton(
+              onPressed: _isLoading ? null : _handleRegister,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: _primary.withValues(alpha: 0.6),
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(DSRadius.md)),
+              ),
+              child: _isLoading
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                    )
+                  : Text(
+                      isProvider
+                          ? 'Create Provider Account'
+                          : (isStudent ? 'Create Student Account' : 'Create Reader Account'),
+                      style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          Center(
+            child: GestureDetector(
+              onTap: () => context.push('/login'),
+              child: RichText(
+                text: TextSpan(
+                  text: 'Already have an account? ',
+                  style: GoogleFonts.inter(color: _textLight, fontSize: 14),
+                  children: [
+                    TextSpan(
+                      text: 'Sign In',
+                      style: GoogleFonts.inter(
+                        color: _primary,
+                        fontWeight: FontWeight.bold,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// CUSTOM WIDGETS
+// ────────────────────────────────────────────────────────────────────────────
+
+class _ExperienceCard extends StatelessWidget {
+  final bool isSelected;
+  final String badgeLabel;
+  final Color badgeColor;
+  final String title;
+  final IconData icon;
+  final String description;
+  final String footerTag;
+  final VoidCallback onTap;
+
+  const _ExperienceCard({
+    required this.isSelected,
+    required this.badgeLabel,
+    required this.badgeColor,
+    required this.title,
+    required this.icon,
+    required this.description,
+    required this.footerTag,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = DSColors.deepForestGreen;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(DSRadius.md),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white : const Color(0xFFFAF9F6),
+          borderRadius: BorderRadius.circular(DSRadius.md),
+          border: Border.all(
+            color: isSelected ? primary : DSColors.softBorder,
+            width: isSelected ? 2.2 : 1,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: primary.withValues(alpha: 0.1),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : [],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: isSelected ? primary : const Color(0xFFE2E8F0),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 22,
+                    color: isSelected ? Colors.white : DSColors.textLight,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: GoogleFonts.playfairDisplay(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? primary : DSColors.charcoal,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: badgeColor.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                badgeLabel,
+                                style: GoogleFonts.inter(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: badgeColor,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                  color: isSelected ? primary : const Color(0xFFA0AEC0),
+                  size: 22,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              description,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                color: DSColors.textLight,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEDF2F7),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                footerTag,
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: DSColors.charcoal,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RegisterField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final bool obscureText;
+  final Widget? suffixIcon;
+  final TextInputType keyboardType;
+  final String? Function(String?)? validator;
+
+  const _RegisterField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.obscureText = false,
+    this.suffixIcon,
+    this.keyboardType = TextInputType.text,
+    this.validator,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: controller,
+      obscureText: obscureText,
+      keyboardType: keyboardType,
+      validator: validator,
+      style: GoogleFonts.inter(fontSize: 14, color: DSColors.charcoal),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: GoogleFonts.inter(fontSize: 13, color: DSColors.textMuted),
+        prefixIcon: Icon(icon, size: 20, color: DSColors.deepForestGreen),
+        suffixIcon: suffixIcon,
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DSRadius.md),
+          borderSide: const BorderSide(color: DSColors.softBorder),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DSRadius.md),
+          borderSide: const BorderSide(color: DSColors.softBorder),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DSRadius.md),
+          borderSide: const BorderSide(color: DSColors.deepForestGreen, width: 1.5),
+        ),
+      ),
+    );
+  }
+}

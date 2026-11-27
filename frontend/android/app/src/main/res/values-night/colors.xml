@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The Tactile Archive Brand Colors -->
+    <color name="ic_launcher_background">#183D32</color>
+    <color name="splash_background">#183D32</color>
+    <color name="brand_primary">#183D32</color>
+    <color name="brand_gold">#D4AF37</color>
+    <color name="brand_ivory">#F8F5EE</color>
+</resources>

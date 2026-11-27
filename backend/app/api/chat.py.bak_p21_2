@@ -1,0 +1,346 @@
+import os
+import json
+import logging
+import asyncio
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from jose import jwt, JWTError, ExpiredSignatureError
+
+from app.core.database import SessionLocal
+from app.core.security import SECRET_KEY, ALGORITHM
+from app.core.cors_config import is_websocket_origin_allowed
+from app.core.config import LEGACY_TOKEN_SUNSET_UTC
+from app.api.auth import get_current_user, REVOKED_TOKENS, is_token_revoked
+from app.models.user import User
+from app.models.order import Order, OrderItem
+from app.models.book import Book
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# WebSocket Connection Manager
+# ---------------------------------------------------------------------------
+
+class ConnectionManager:
+    """Manages real-time WebSockets connections per order chat room."""
+
+    def __init__(self):
+        # order_id -> list of active WebSockets
+        self.active_connections: Dict[int, List[WebSocket]] = {}
+
+    async def connect(self, order_id: int, websocket: WebSocket, subprotocol: Optional[str] = None):
+        if subprotocol:
+            await websocket.accept(subprotocol=subprotocol)
+        else:
+            await websocket.accept()
+        if order_id not in self.active_connections:
+            self.active_connections[order_id] = []
+        self.active_connections[order_id].append(websocket)
+        logger.info(f"[WebSocket] Client connected to chat room order #{order_id} (active: {len(self.active_connections[order_id])})")
+
+    def disconnect(self, order_id: int, websocket: WebSocket):
+        if order_id in self.active_connections:
+            if websocket in self.active_connections[order_id]:
+                self.active_connections[order_id].remove(websocket)
+            if not self.active_connections[order_id]:
+                del self.active_connections[order_id]
+        logger.info(f"[WebSocket] Client disconnected from chat room order #{order_id}")
+
+    async def broadcast(self, order_id: int, message: dict):
+        if order_id in self.active_connections:
+            dead_connections = []
+            for connection in self.active_connections[order_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    logger.error(f"[WebSocket] Error broadcasting to client in order #{order_id}: {e}")
+                    dead_connections.append(connection)
+            for dead in dead_connections:
+                self.disconnect(order_id, dead)
+
+ws_manager = ConnectionManager()
+
+# ---------------------------------------------------------------------------
+# Helper Functions: Token Extraction, Validation & Order Authorization
+# ---------------------------------------------------------------------------
+
+def extract_websocket_token(websocket: WebSocket) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extracts authentication token from WebSocket request headers.
+    Supports:
+      1. Standard 'Authorization: Bearer <token>' header.
+      2. 'Sec-WebSocket-Protocol: bearer, <token>' subprotocol header (used by browser clients).
+    Insecure URL query parameters (?token=...) are explicitly rejected to prevent log leakage.
+    """
+    # 1. Inspect Authorization header
+    auth_header = websocket.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.strip().split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1], None
+        return auth_header.strip(), None
+
+    # 2. Inspect Sec-WebSocket-Protocol header for browser clients
+    protocols_header = websocket.headers.get("sec-websocket-protocol")
+    if protocols_header:
+        protocols = [p.strip() for p in protocols_header.split(",") if p.strip()]
+        if len(protocols) >= 2 and protocols[0].lower() == "bearer":
+            return protocols[1], "bearer"
+        for p in protocols:
+            if p.count(".") == 2 and len(p) > 20:
+                return p, p
+
+    return None, None
+
+
+def authenticate_websocket_token(token: Optional[str], db: Session) -> Tuple[Optional[User], Optional[str]]:
+    """
+    Validates a JWT access token for WebSocket connection.
+    Returns (user, None) on success, or (None, rejection_reason) on failure.
+    """
+    if not token or not token.strip():
+        return None, "Missing authentication credentials in headers"
+
+    cleaned_token = token.strip()
+    if cleaned_token in REVOKED_TOKENS:
+        return None, "Token has been revoked"
+
+    try:
+        payload = jwt.decode(cleaned_token, SECRET_KEY, algorithms=[ALGORITHM])
+        # Validate token type (reject non-access tokens, e.g. refresh tokens)
+        token_type = payload.get("type")
+        if token_type and token_type != "access":
+            return None, f"Invalid token type: expected 'access', got '{token_type}'"
+
+        # Check persistent revocation in database
+        jti = payload.get("jti")
+        if jti and is_token_revoked(jti, cleaned_token, db):
+            return None, "Token has been revoked"
+
+        email = payload.get("sub")
+        if not email:
+            return None, "Invalid token payload: missing subject"
+
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            return None, "User not found"
+        if getattr(user, "role", None) == "deleted":
+            return None, "User account has been deleted"
+
+        # Check token versioning & legacy sunset
+        token_ver = payload.get("ver")
+        user_ver = getattr(user, "token_version", 1) or 1
+        if token_ver is None:
+            now_utc = datetime.now(timezone.utc)
+            if now_utc > LEGACY_TOKEN_SUNSET_UTC:
+                return None, "Legacy token has expired past sunset deadline. Please re-authenticate."
+        else:
+            if int(token_ver) < user_ver:
+                return None, "Session invalidated due to security credential change. Please re-authenticate."
+
+        return user, None
+
+    except ExpiredSignatureError:
+        return None, "Token has expired"
+    except JWTError:
+        return None, "Invalid or malformed authentication token"
+    except Exception as e:
+        logger.error(f"[WebSocket Auth] Internal authentication error: {e}", exc_info=True)
+        return None, "Authentication failed due to an internal error."
+
+
+def check_order_access(user: User, order_id: int, db: Session) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Verifies that the authenticated user is authorized to access the order conversation.
+    Authorization rules:
+      1. Legitimate Buyer: order.user_id == user.id -> role 'buyer'
+      2. Assigned Provider: order item provider_id == user.id OR book.owner_id == user.id -> role 'provider'
+      3. Explicit Administrator: user.is_admin is True or user.role == 'admin' -> role 'admin'
+    Returns:
+      (is_authorized, role_name, error_reason)
+    """
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        return False, None, f"Order #{order_id} not found"
+
+    # 1. Administrator access
+    if getattr(user, "is_admin", False) is True or getattr(user, "role", None) == "admin":
+        return True, "admin", None
+
+    # 2. Buyer access
+    if order.user_id == user.id:
+        return True, "buyer", None
+
+    # 3. Provider access (item provider_id or book owner_id)
+    for item in order.items:
+        if item.provider_id is not None and item.provider_id == user.id:
+            return True, "provider", None
+        if item.book_id:
+            book = db.query(Book).filter(Book.id == item.book_id).first()
+            if book and book.owner_id == user.id:
+                return True, "provider", None
+
+    return False, None, f"Access denied: user {user.id} is not authorized for Order #{order_id} conversation"
+
+
+# ---------------------------------------------------------------------------
+# HTTP Endpoints: Protected Assistant Chat
+# ---------------------------------------------------------------------------
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    reply: str
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest, user: User = Depends(get_current_user)):
+    """
+    AI Assistant chat endpoint.
+    Requires authenticated user (rejects unauthenticated/expired/invalid requests).
+    Executes AI completion with timeout protection and safe local intelligence fallback.
+    """
+    user_msg = request.message.strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key or "placeholder" in gemini_key.lower() or gemini_key.strip() == "":
+        return ChatResponse(
+            reply="I am the LibriFlow AI assistant. I'm currently in local intelligence mode because GEMINI_API_KEY is unconfigured in the production environment."
+        )
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        system_prompt = (
+            "You are LibriFlow's AI assistant. You help users navigate the library, buy, sell, borrow, and rent books. "
+            "Keep your answers concise, friendly, and helpful."
+        )
+
+        response = await asyncio.wait_for(
+            asyncio.to_thread(model.generate_content, f"{system_prompt}\n\nUser: {user_msg}"),
+            timeout=15.0
+        )
+        reply = response.text
+    except asyncio.TimeoutError:
+        logger.warning(f"[CHAT] Gemini response timed out for user {user.id}")
+        reply = "I'm experiencing higher than usual response times. Please try your question again in a moment."
+    except Exception as e:
+        logger.error(f"[CHAT] Gemini error for user {user.id}: {e}")
+        reply = "I'm having a little trouble connecting to my brain right now. Please try again later!"
+
+    return ChatResponse(reply=reply)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket Endpoint: Secured Peer-to-Peer Order Chat
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/chat/{order_id}")
+async def websocket_peer_chat(websocket: WebSocket, order_id: int):
+    """
+    Secured real-time WebSocket endpoint for instant peer-to-peer book order chat.
+    Enforces header-based authentication (Authorization: Bearer <token> or Sec-WebSocket-Protocol).
+    Restricted exclusively to legitimate buyer, assigned provider, or platform administrators.
+    Rejects unauthorized access and cross-order message attempts with WS_1008_POLICY_VIOLATION.
+    """
+    # 0. Validate WebSocket Origin
+    origin = websocket.headers.get("origin")
+    if not is_websocket_origin_allowed(origin):
+        logger.warning(f"[WebSocket] Rejected unauthorized Origin '{origin}' on order #{order_id}")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Cross-origin WebSocket connections are forbidden.")
+        return
+
+    token, subprotocol = extract_websocket_token(websocket)
+    db = SessionLocal()
+    connected = False
+    user_display_name = ""
+    role = ""
+    try:
+        # 1. Validate Authentication Token
+        user, auth_err = authenticate_websocket_token(token, db)
+        if not user:
+            logger.warning(f"[WebSocket] Unauthorized connection attempt to order #{order_id}: {auth_err}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=auth_err or "Unauthorized")
+            return
+
+        initial_token_version = getattr(user, "token_version", 1) or 1
+        token_jti = None
+        try:
+            payload_peek = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            token_jti = payload_peek.get("jti")
+        except Exception:
+            pass
+
+        # 2. Validate Order Authorization & RBAC
+        is_authorized, role, access_err = check_order_access(user, order_id, db)
+        if not is_authorized:
+            logger.warning(f"[WebSocket] Forbidden access attempt by user {user.id} ({user.email}) to order #{order_id}: {access_err}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=access_err or "Forbidden")
+            return
+
+        # 3. Connect client to order chat room
+        await ws_manager.connect(order_id, websocket, subprotocol=subprotocol)
+        connected = True
+
+        user_display_name = user.name or user.email.split("@")[0]
+        await ws_manager.broadcast(order_id, {
+            "type": "system",
+            "order_id": order_id,
+            "text": f"{user_display_name} ({role}) joined the conversation.",
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+        try:
+            while True:
+                data = await websocket.receive_json()
+
+                # Mid-session revocation & token version validation
+                db.refresh(user)
+                current_ver = getattr(user, "token_version", 1) or 1
+                if current_ver > initial_token_version or (token_jti and is_token_revoked(token_jti, token, db)):
+                    logger.warning(f"[WebSocket] In-flight token revocation detected for user {user.id}. Terminating connection.")
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Session has been revoked.")
+                    break
+
+                text = (data.get("text") or data.get("message") or "").strip()
+                if not text:
+                    continue
+
+                # Server-enforces pinned order_id, sender identity and verified role
+                payload = {
+                    "type": "message",
+                    "order_id": order_id,
+                    "sender": user_display_name,
+                    "user_id": user.id,
+                    "role": role,
+                    "text": text,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                await ws_manager.broadcast(order_id, payload)
+
+        except WebSocketDisconnect:
+            pass
+        except Exception as ws_err:
+            logger.error(f"[WebSocket] Unexpected error in chat loop for order #{order_id}: {ws_err}", exc_info=True)
+
+    finally:
+        if connected:
+            ws_manager.disconnect(order_id, websocket)
+            try:
+                await ws_manager.broadcast(order_id, {
+                    "type": "system",
+                    "order_id": order_id,
+                    "text": f"{user_display_name} ({role}) left the conversation.",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+            except Exception:
+                pass
+        db.close()

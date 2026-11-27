@@ -1,0 +1,127 @@
+from pydantic import BaseModel
+from enum import Enum
+from typing import Optional, Dict
+from datetime import datetime
+
+class PersonaEnum(str, Enum):
+    student = "student"
+    reader = "reader"
+
+# Backwards compatibility alias
+UserTypeEnum = PersonaEnum
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = "customer"
+    customer_type: Optional[str] = None
+    user_type: Optional[UserTypeEnum] = None
+    persona: Optional[PersonaEnum] = None
+    active_experience: Optional[str] = None
+    # Optional academic details during signup for students
+    college: Optional[str] = None
+    course: Optional[str] = None
+    semester: Optional[str] = None
+    graduation_year: Optional[str] = None
+    syllabus: Optional[str] = None
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    level: str
+    role: str = "customer"
+    is_admin: bool = False
+    customer_type: Optional[str] = None
+    user_type: Optional[str] = "reader"
+    persona: Optional[str] = "reader"
+    active_experience: Optional[str] = "reader"
+    provider_enabled: bool = False
+    provider_status: str = "not_enrolled"
+    onboarding_completed: bool = False
+    join_date: datetime
+
+    class Config:
+        from_attributes = True
+
+class ExperienceUpdatePayload(BaseModel):
+    active_experience: Optional[str] = None # "student" or "reader"
+    experience: Optional[str] = None
+    persona: Optional[str] = None
+
+    @property
+    def selected_experience(self) -> Optional[str]:
+        return self.active_experience or self.experience or self.persona
+
+class ProviderActivationPayload(BaseModel):
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    business_name: Optional[str] = None
+
+class PersonaUpdatePayload(BaseModel):
+    user_type: Optional[UserTypeEnum] = None
+    persona: Optional[PersonaEnum] = None
+    active_experience: Optional[str] = None
+
+class PersonaResponse(BaseModel):
+    id: int
+    email: str
+    user_type: str = "reader"
+    persona: str = "reader"
+    active_experience: str = "reader"
+    provider_enabled: bool = False
+    provider_status: str = "not_enrolled"
+    onboarding_completed: bool
+    role: str
+
+class SettingsResponse(BaseModel):
+    fullName: str
+    email: str
+    phone: str
+    address: str
+    bio: str
+    avatarUrl: str
+    notifications: Dict[str, bool]
+    active_experience: Optional[str] = "reader"
+    provider_enabled: Optional[bool] = False
+    provider_status: Optional[str] = "not_enrolled"
+
+class SettingsUpdate(BaseModel):
+    fullName: Optional[str] = ""
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
+    bio: Optional[str] = ""
+    avatarUrl: Optional[str] = ""
+    notifications: Optional[Dict[str, bool]] = None
+    active_experience: Optional[str] = None
+
+class GoogleAuthRequest(BaseModel):
+    credential: str
+    persona_hint: Optional[str] = "reader"
+    client_id: Optional[str] = None
+
+class AccountDeletionStatusUpdate(BaseModel):
+    status: str
+    resolution_notes: Optional[str] = None
+
+class AccountDeleteRequest(BaseModel):
+    password: Optional[str] = None
+    confirmation: Optional[str] = None
+    reason: Optional[str] = None
+
+class PublicAccountDeletionRequest(BaseModel):
+    email: str
+    reason: Optional[str] = None
+
+class PublicAccountDeletionResponse(BaseModel):
+    success: bool
+    message: str
+    request_id: Optional[str] = None
+    status: Optional[str] = None
+    is_duplicate: Optional[bool] = False
+
+

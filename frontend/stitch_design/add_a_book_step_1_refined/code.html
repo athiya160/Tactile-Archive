@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>The Tactile Archive - Listing Flow</title>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif:wght@700&amp;family=Manrope:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-primary-container": "#819986",
+                    "surface-container-lowest": "#ffffff",
+                    "surface-container": "#f1f1ed",
+                    "secondary-fixed": "#dce5db",
+                    "outline": "#737973",
+                    "surface-variant": "#e2e3df",
+                    "on-error": "#ffffff",
+                    "primary-fixed": "#d0e9d4",
+                    "error-container": "#ffdad6",
+                    "error": "#ba1a1a",
+                    "background": "#faf9f5",
+                    "surface-container-high": "#e8e8e4",
+                    "on-tertiary-container": "#b0898c",
+                    "on-primary-fixed": "#0b2013",
+                    "tertiary": "#271013",
+                    "surface-tint": "#4d6453",
+                    "surface-bright": "#faf9f5",
+                    "on-background": "#1a1c1a",
+                    "primary-fixed-dim": "#b4cdb8",
+                    "on-surface-variant": "#737973",
+                    "on-primary-fixed-variant": "#364c3c",
+                    "tertiary-fixed": "#ffd9dc",
+                    "on-primary": "#ffffff",
+                    "tertiary-container": "#3f2427",
+                    "surface-container-low": "#f4f4f0",
+                    "inverse-on-surface": "#f1f1ed",
+                    "on-secondary-fixed": "#151d17",
+                    "secondary-container": "#d9e2d8",
+                    "primary-container": "#1B3022",
+                    "primary": "#1B3022",
+                    "surface-dim": "#dadad6",
+                    "tertiary-fixed-dim": "#e7bcbf",
+                    "outline-variant": "#c3c8c1",
+                    "inverse-primary": "#b4cdb8",
+                    "surface": "#faf9f5",
+                    "on-secondary-container": "#5c655d",
+                    "on-error-container": "#93000a",
+                    "on-surface": "#1a1c1a",
+                    "on-secondary": "#ffffff",
+                    "surface-container-highest": "#e2e3df",
+                    "on-tertiary-fixed-variant": "#5d3f42",
+                    "on-tertiary-fixed": "#2d1417",
+                    "on-secondary-fixed-variant": "#404941",
+                    "on-tertiary": "#ffffff",
+                    "inverse-surface": "#2f312e",
+                    "secondary": "#586159",
+                    "secondary-fixed-dim": "#c0c9bf"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.5rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "fontFamily": {
+                    "headline": ["Noto Serif"],
+                    "body": ["Manrope"],
+                    "label": ["Manrope"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            line-height: 1;
+            text-transform: none;
+            letter-spacing: normal;
+            word-wrap: normal;
+            white-space: nowrap;
+            direction: ltr;
+        }
+        body { font-family: 'Manrope', sans-serif; background-color: #faf9f5; -webkit-font-smoothing: antialiased; }
+        h1, h2, h3, h4, h5, h6, .font-serif, .font-headline { font-family: 'Noto Serif', serif; font-style: normal; }
+        .font-sans, .font-body, .font-label { font-family: 'Manrope', sans-serif; }
+        
+        .form-field {
+            background-color: #ffffff;
+            border-radius: 0rem;
+            border: 1px solid #737973;
+            padding: 0.875rem 1rem;
+            width: 100%;
+            font-family: 'Manrope', sans-serif;
+            font-weight: 500;
+            color: #1a1c1a;
+            transition: all 0.2s ease-in-out;
+        }
+        .form-field:focus {
+            outline: 1.5px solid #1B3022;
+            border-color: #1B3022;
+            ring: 0;
+        }
+        .form-field::placeholder {
+            color: #737973;
+            opacity: 0.6;
+        }
+        
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .progress-track {
+            height: 4px;
+            background-color: #e2e3df;
+            border-radius: 9999px;
+            overflow: hidden;
+            width: 100%;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #1B3022;
+            border-radius: 9999px;
+            transition: width 0.5s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface min-h-screen">
+<!-- TopAppBar - Navigation Focused -->
+<header class="bg-surface fixed top-0 left-0 right-0 z-50">
+<div class="flex justify-between items-center w-full px-6 py-8 max-w-7xl mx-auto">
+<button class="w-10 h-10 flex items-center justify-start hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface" data-icon="arrow_back">arrow_back</span>
+</button>
+<h1 class="text-3xl font-headline font-bold text-on-surface leading-tight">Add a Book</h1>
+<div class="w-10"></div>
+</div>
+</header>
+<!-- Content Canvas -->
+<main class="pt-32 px-6 pb-12 max-w-2xl mx-auto">
+<!-- Step Indicators -->
+<div class="mb-12 space-y-4">
+<div class="flex justify-between items-baseline">
+<div class="space-y-1">
+<span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Step 01 of 03</span>
+<h2 class="text-3xl font-headline font-bold text-on-surface">Book Details</h2>
+</div>
+<span class="text-[10px] font-bold text-on-surface-variant uppercase tracking-[0.15em]">33% Complete</span>
+</div>
+<div class="progress-track">
+<div class="progress-fill" style="width: 33.33%;"></div>
+</div>
+</div>
+<!-- Listing Form Flow -->
+<form class="space-y-12">
+<!-- Cover Upload Area -->
+<div class="flex flex-col gap-10">
+<div class="w-full aspect-[3/4.2] bg-surface-container-low rounded-lg overflow-hidden flex flex-col items-center justify-center border border-dashed border-outline-variant hover:bg-surface-container transition-colors cursor-pointer group">
+<span class="material-symbols-outlined text-4xl text-outline-variant/60 group-hover:scale-110 transition-transform mb-4" data-icon="add_a_photo">add_a_photo</span>
+<p class="text-[11px] font-bold text-on-surface-variant uppercase tracking-[0.2em]">Upload Cover Image</p>
+</div>
+<div class="space-y-8">
+<div class="group">
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">ISBN Number</label>
+<input class="form-field" placeholder="978-3-16-148410-0" type="text"/>
+<button class="mt-4 text-[10px] font-bold text-on-surface flex items-center gap-2 uppercase tracking-[0.15em] opacity-80 hover:opacity-100 transition-opacity" type="button">
+<span class="material-symbols-outlined text-lg" data-icon="qr_code_scanner">qr_code_scanner</span>
+                            Scan Barcode
+                        </button>
+</div>
+<div class="group">
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Book Title</label>
+<input class="form-field" placeholder="e.g. The Shadow of the Wind" type="text"/>
+</div>
+<div class="group">
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Author</label>
+<input class="form-field" placeholder="e.g. Carlos Ruiz Zafón" type="text"/>
+</div>
+<div class="group">
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Description</label>
+<textarea class="form-field resize-none min-h-[120px] border border-outline-variant/50" placeholder="Enter a general description of the work..."></textarea>
+</div>
+</div>
+</div>
+<!-- Metadata Bento Sections -->
+<div class="space-y-4">
+<!-- Edition Details -->
+<div class="bg-surface-container-low/40 p-8 rounded-lg space-y-8">
+<h3 class="font-headline font-bold text-2xl text-on-surface">Edition Details</h3>
+<div class="space-y-6">
+<div>
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Publisher</label>
+<input class="form-field" placeholder="Penguin Books" type="text"/>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div>
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Publication Year</label>
+<input class="form-field" placeholder="2001" type="number"/>
+</div>
+<div>
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Number of Pages</label>
+<input class="form-field" placeholder="480" type="number"/>
+</div>
+</div>
+<div>
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Language</label>
+<input class="form-field" placeholder="English" type="text"/>
+</div>
+</div>
+</div>
+</div>
+<!-- Synopsis & Personal Notes -->
+<div class="group">
+<label class="block text-[10px] font-extrabold uppercase tracking-[0.2em] text-on-surface-variant mb-2">Synopsis &amp; Personal Notes</label>
+<textarea class="form-field resize-none min-h-[160px] border border-outline-variant/50" placeholder="Provide a brief summary or notes about this specific copy..."></textarea>
+</div>
+<!-- Action Buttons -->
+<div class="pt-8 space-y-6">
+<button class="w-full py-5 bg-[#1B3022] text-white rounded-lg font-extrabold text-[12px] uppercase tracking-[0.25em] shadow-md hover:brightness-110 active:scale-[0.98] transition-all duration-200" type="submit">
+                    Continue to Photos
+                </button>
+<button class="w-full py-2 text-on-surface font-bold text-[11px] uppercase tracking-[0.2em] hover:text-on-surface-variant transition-colors" type="button">
+                    Save for Later
+                </button>
+</div>
+</form>
+<!-- Aesthetic Footer Icon -->
+<div class="mt-24 flex justify-center opacity-30">
+<span class="material-symbols-outlined text-7xl text-on-surface" data-icon="menu_book">menu_book</span>
+</div>
+</main>
+</body></html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>The Tactile Archive - Review &amp; Publish</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif:wght@700;900&amp;family=Manrope:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-error-container": "#93000a",
+                        "on-secondary": "#ffffff",
+                        "on-primary-fixed": "#0b2013",
+                        "on-background": "#1a1c1a",
+                        "inverse-on-surface": "#f1f1ed",
+                        "error-container": "#ffdad6",
+                        "surface-dim": "#dadad6",
+                        "tertiary-container": "#3f2427",
+                        "outline": "#737973",
+                        "on-surface": "#1a1c1a",
+                        "secondary": "#586159",
+                        "on-primary-container": "#819986",
+                        "error": "#ba1a1a",
+                        "secondary-fixed-dim": "#c0c9bf",
+                        "on-tertiary-fixed": "#2d1417",
+                        "surface": "#faf9f5",
+                        "primary-fixed": "#d0e9d4",
+                        "outline-variant": "#c3c8c1",
+                        "background": "#faf9f5",
+                        "on-secondary-fixed": "#151d17",
+                        "secondary-fixed": "#dce5db",
+                        "surface-container-high": "#e8e8e4",
+                        "primary": "#1B3022",
+                        "surface-container": "#eeeeea",
+                        "on-primary": "#ffffff",
+                        "inverse-primary": "#b4cdb8",
+                        "surface-variant": "#e2e3df",
+                        "surface-tint": "#4d6453",
+                        "surface-container-lowest": "#ffffff",
+                        "on-error": "#ffffff",
+                        "surface-bright": "#faf9f5",
+                        "on-tertiary-container": "#b0898c",
+                        "on-secondary-container": "#5c655d",
+                        "tertiary-fixed-dim": "#e7bcbf",
+                        "on-primary-fixed-variant": "#364c3c",
+                        "surface-container-low": "#f4f4f0",
+                        "on-secondary-fixed-variant": "#404941",
+                        "secondary-container": "#d9e2d8",
+                        "on-tertiary-fixed-variant": "#5d3f42",
+                        "surface-container-highest": "#e2e3df",
+                        "on-surface-variant": "#434843",
+                        "primary-container": "#1b3022",
+                        "inverse-surface": "#2f312e",
+                        "tertiary-fixed": "#ffd9dc",
+                        "primary-fixed-dim": "#b4cdb8",
+                        "on-tertiary": "#ffffff",
+                        "tertiary": "#271013"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Noto Serif"],
+                        "body": ["Manrope"],
+                        "label": ["Manrope"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Manrope', sans-serif; background-color: #faf9f5; -webkit-font-smoothing: antialiased; }
+        h1, h2, h3, h4, h5, h6, .font-serif, .font-headline { font-family: 'Noto Serif', serif; font-style: normal; }
+        .font-sans, .font-body, .font-label { font-family: 'Manrope', sans-serif; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24; }
+    </style>
+</head>
+<body class="bg-surface text-on-surface min-h-screen font-body">
+<!-- Header Section (Minimal focused layout) -->
+<header class="bg-surface/85 backdrop-blur-md sticky top-0 z-40 flex items-center justify-between px-6 py-4 w-full border-b border-outline-variant/10">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-primary cursor-pointer" data-icon="arrow_back" style="">arrow_back</span>
+<span class="text-primary font-bold text-lg" style="">The Tactile Archive</span>
+</div>
+<div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="person" style="">person</span>
+</div>
+</header>
+<main class="max-w-2xl mx-auto px-6 py-10">
+<!-- Screen Title -->
+<div class="mb-10">
+<h1 class="text-[32px] font-bold text-primary leading-tight mb-2" style="">Add a Book</h1>
+<p class="text-on-surface-variant font-medium text-sm mb-6" style="">Step 03 of 03: Review &amp; Publish</p>
+<div class="space-y-2">
+<div class="flex justify-between items-center text-[10px] font-bold uppercase tracking-[0.1em] text-primary">
+<span class="" style="">Progress</span>
+<span class="" style="">100%</span>
+</div>
+<div class="h-[3px] w-full bg-surface-container-highest rounded-full overflow-hidden">
+<div class="h-full bg-primary w-full rounded-full transition-all duration-500"></div>
+</div>
+</div>
+</div>
+<div class="space-y-10">
+<!-- Main Identification Card -->
+<section>
+<div class="bg-surface-container-lowest p-6 rounded-xl flex flex-col gap-6 shadow-sm border border-outline-variant/20">
+<div class="flex justify-center">
+<div class="relative inline-block">
+<img alt="Book Cover" class="w-40 aspect-[2/3] object-cover rounded-sm shadow-xl ring-1 ring-black/5" data-alt="Close-up of a vintage hardcover book with gold leaf lettering on a dark green spine, atmospheric library lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDp1_wPhJFeM8BzjqFcfPIbN64HO5hNCCQs-HEdFs3200hvYph0Du3sMvMumD8lRszwfNgAZIniDLOtgPu5OJbBQdH99ATCOFPCkLGa1GbqagyZ2rMRQfC1icwYxOC78TxP_bXD_nnBgy2vOR1BWq-lpo5_bsPMZmhso5sLiGuPVpQZtiBVt51jy1IDg63bOSLrtzu9m35HhlZuhEwNTbRH1aTRTFR6Q5NXTfZd5tsLWv_Wflsi6zwe4fDI5AQeg8CmJ4G_J7vz82gK" style="">
+<div class="absolute -bottom-2 -right-2 bg-[#1B3022] text-on-primary p-1.5 rounded-lg shadow-lg">
+<span class="material-symbols-outlined text-[16px] block" data-icon="verified" style="">verified</span>
+</div>
+</div>
+</div>
+<div class="text-center md:text-left">
+<span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-tertiary-container mb-2 block" style="">Primary Identification</span>
+<h2 class="text-2xl font-bold text-primary mb-1" style="">The Architecture of Silence</h2>
+<p class="text-lg text-on-surface-variant font-medium mb-6" style="">Julian V. Thorne</p>
+<div class="grid grid-cols-2 gap-4 pt-6 border-t border-surface-container">
+<div>
+<p class="text-[10px] font-bold uppercase text-outline mb-1 tracking-wider" style="">ISBN-13</p>
+<p class="font-semibold text-primary text-sm" style="">978-3-16-148410-0</p>
+</div>
+<div>
+<p class="text-[10px] font-bold uppercase text-outline mb-1 tracking-wider" style="">Edition</p>
+<p class="font-semibold text-primary text-sm" style="">First Edition (1994)</p>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Archival Summary -->
+<section>
+<div class="flex items-center gap-2.5 mb-5">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="edit_note" style="">edit_note</span>
+<h3 class="text-xl font-bold text-primary" style="">Archival Summary</h3>
+</div>
+<div class="bg-surface-container-low p-6 rounded-xl border border-outline-variant/10">
+<p class="text-on-surface-variant leading-relaxed text-[15px] font-medium" style="">
+                    This volume was acquired from the estate of Dr. Aris Thorne in Vienna. It represents a seminal work in the phenomenology of monastic spaces. The uploader notes emphasize the high-quality rag paper used in this specific printing, which has resisted yellowing over three decades.
+                </p>
+</div>
+</section>
+<!-- Physical Copies -->
+<section>
+<div class="flex items-center gap-2.5 mb-5">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="inventory_2" style="">inventory_2</span>
+<h3 class="text-xl font-bold text-primary" style="">Physical Copies</h3>
+</div>
+<div class="space-y-3">
+<div class="bg-surface-container-low p-5 rounded-xl flex items-center justify-between border-l-4 border-primary shadow-sm">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 bg-surface-container-highest rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="menu_book" style="">menu_book</span>
+</div>
+<div>
+<p class="font-bold text-primary text-sm" style="">Reference Copy Alpha</p>
+<p class="text-xs text-on-surface-variant font-medium" style="">Archival Box #442</p>
+</div>
+</div>
+<div class="text-right">
+<span class="bg-primary text-on-primary text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider" style="">LIKE NEW</span>
+<p class="mt-1 font-bold text-primary text-xs" style="">Not For Sale</p>
+</div>
+</div>
+<div class="bg-surface-container-low p-5 rounded-xl flex items-center justify-between border border-outline-variant/10">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 bg-surface-container-highest rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="shopping_bag" style="">shopping_bag</span>
+</div>
+<div>
+<p class="font-bold text-primary text-sm" style="">Circulating Copy Beta</p>
+<p class="text-xs text-on-surface-variant font-medium" style="">Available for Exchange</p>
+</div>
+</div>
+<div class="text-right">
+<span class="bg-surface-container-highest text-on-surface-variant text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider" style="">Good</span>
+<p class="mt-1 font-bold text-primary text-xs" style="">$45.00</p>
+</div>
+</div>
+</div>
+</section>
+<!-- Archive Standards Checklist -->
+<section class="bg-surface-container-low p-6 rounded-xl border border-outline-variant/10">
+<h3 class="text-lg font-bold text-primary mb-6" style="">Archive Standards</h3>
+<div class="space-y-5">
+<label class="flex items-start gap-4 cursor-pointer group" style="">
+<div class="mt-0.5">
+<input checked="" class="w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary bg-surface-container" type="checkbox">
+</div>
+<span class="text-sm font-medium text-on-surface leading-tight" style="">
+                        I verify that the metadata provided matches the physical ISBN and edition of this volume.
+                    </span>
+</label>
+<label class="flex items-start gap-4 cursor-pointer group" style="">
+<div class="mt-0.5">
+<input checked="" class="w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary bg-surface-container" type="checkbox">
+</div>
+<span class="text-sm font-medium text-on-surface leading-tight" style="">
+                        I agree to the Archival Terms of Service regarding high-resolution media uploads.
+                    </span>
+</label>
+<label class="flex items-start gap-4 cursor-pointer group" style="">
+<div class="mt-0.5">
+<input checked="" class="w-5 h-5 rounded border-outline-variant text-primary focus:ring-primary bg-surface-container" type="checkbox">
+</div>
+<span class="text-sm font-medium text-on-surface leading-tight" style="">
+                        I confirm this book is in the public domain or shared under archival guidelines.
+                    </span>
+</label>
+</div>
+</section>
+<!-- Final Action -->
+<div class="space-y-4 pt-4">
+<button class="w-full py-4 bg-[#1B3022] text-[#ffffff] rounded-xl font-bold text-base shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-3" style="">
+<span class="" style="">Publish to Archive</span>
+<span class="material-symbols-outlined text-lg" data-icon="publish" style="">publish</span>
+</button>
+<button class="w-full py-4 bg-transparent text-primary border border-outline-variant rounded-xl font-bold text-base hover:bg-surface-container-low transition-colors" style="">
+                Save as Draft
+            </button>
+<p class="text-center text-[11px] text-outline px-4 font-medium leading-relaxed" style="">
+                By publishing, your entry will be reviewed by the board of curators within 24 hours.
+            </p>
+</div>
+<!-- Decorative Element -->
+<div class="rounded-xl overflow-hidden aspect-[21/9] relative group">
+<img alt="Archival mood" class="w-full h-full object-cover grayscale opacity-40" data-alt="Dust particles dancing in a single beam of light in a dark, historic library, high contrast and moody" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA65WinlUIuk7Rr2zw9pkozdyIvdq_CeWe133wGuGliIUnkIByYAEqm4q1Gxb8lD6TRHAeG2rTxEL6EIYf9A8EF0eEH_PGrqe8GkU1HeTqrFl-kPW-2k297wh2Q_QD_4aP58bjZ1-JhpDsZO9Hc_EORDkYJR_Hopy_zkIgpYrj3kvb_05yXzdIwRpXx4qVCCnPCR0CURkuzkHYRMiJfGrNt7A9I4w-L2fhxRRHwLqHzVEnxNR_7fBWDqf9mb77I9LTrwQYCIz-ZR2UQ" style="">
+<div class="absolute inset-0 flex items-center justify-center">
+<span class="text-primary font-serif font-bold text-[10px] tracking-[0.4em] uppercase opacity-80" style="">The Deep Archive</span>
+</div>
+</div>
+</div>
+</main>
+<footer class="h-20"></footer>
+</body></html>

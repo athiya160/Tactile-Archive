@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="api-base-url" content="">
+    <title>Account Deletion Request — The Tactile Archive</title>
+    <style>
+        :root {
+            --primary: #183D32;
+            --accent-gold: #D4AF37;
+            --danger: #DC2626;
+            --danger-bg: #FEF2F2;
+            --bg-paper: #F8F5EE;
+            --surface-white: #FFFDF8;
+            --text-charcoal: #252923;
+            --text-muted: #555C54;
+            --border-soft: #E7E1D6;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-paper);
+            color: var(--text-charcoal);
+            line-height: 1.6;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 680px;
+            width: 100%;
+            background: var(--surface-white);
+            border-radius: 16px;
+            border: 1px solid var(--border-soft);
+            padding: 40px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid var(--border-soft);
+            padding-bottom: 24px;
+            margin-bottom: 28px;
+        }
+        h1 {
+            font-family: 'Georgia', serif;
+            color: var(--primary);
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+        .alert-box {
+            background-color: var(--danger-bg);
+            border-left: 4px solid var(--danger);
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        .section-title {
+            font-family: 'Georgia', serif;
+            font-size: 18px;
+            color: var(--primary);
+            font-weight: 700;
+            margin: 24px 0 12px;
+            border-bottom: 1px solid var(--border-soft);
+            padding-bottom: 6px;
+        }
+        ol, ul { padding-left: 20px; margin-bottom: 16px; font-size: 14px; }
+        li { margin-bottom: 6px; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+        input[type="email"], select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border-soft);
+            border-radius: 8px;
+            font-size: 14px;
+            background: #FAFAFA;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: #FFFFFF;
+        }
+        .btn-submit {
+            background-color: var(--danger);
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            font-size: 14px;
+            font-weight: 700;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.2s;
+        }
+        .btn-submit:hover { opacity: 0.9; }
+        .btn-submit:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .footer {
+            margin-top: 36px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-soft);
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .status-msg {
+            margin-top: 14px;
+            padding: 12px;
+            border-radius: 6px;
+            display: none;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .status-success { background: #ECFDF5; color: #065F46; border: 1px solid #A7F3D0; }
+        .status-error { background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Account & Data Deletion Request</h1>
+            <div class="subtitle">The Tactile Archive (LibriFlow) &bull; Google Play Data Safety Compliance</div>
+        </div>
+
+        <div class="alert-box">
+            <strong>Important Notice:</strong> Account deletion is permanent and irreversible. All personal information, reading logs, student schedules, and wishlists will be immediately erased.
+        </div>
+
+        <div class="section-title">1. How to Delete In-App (Instant)</div>
+        <p style="font-size: 14px; margin-bottom: 8px;">The fastest way to delete your account is directly within the mobile application:</p>
+        <ol>
+            <li>Open <strong>The Tactile Archive</strong> mobile application.</li>
+            <li>Navigate to <strong>Profile &rarr; Account Settings</strong>.</li>
+            <li>Scroll down to the <strong>Danger Zone</strong>.</li>
+            <li>Tap <strong>Delete Account</strong>, verify your password (or type 'DELETE' for Google Sign-In), and confirm.</li>
+        </ol>
+
+        <div class="section-title">2. Data Deleted vs. Data Retained</div>
+        <ul>
+            <li><strong>Data Permanently Erased:</strong> Your name, email, phone number, saved delivery addresses, profile photo, reading history, student schedules, reading goals, favorites, and cart items are immediately purged.</li>
+            <li><strong>Provider Book Listings:</strong> All active marketplace book listings belonging to your account are immediately archived and removed from search.</li>
+            <li><strong>Active Fulfillment Safeguard:</strong> Accounts with active unreturned book rentals, active peer borrowings, or in-transit delivery orders cannot be deleted until all pending handoffs or returns are resolved.</li>
+            <li><strong>Statutory Tax & Audit Retention:</strong> In compliance with statutory commercial taxation and accounting laws, past completed transaction invoices and payment records are retained in a strictly anonymized form with all recipient personal identifying information permanently scrubbed (<code>[Deleted User]</code>, <code>[Redacted - Account Deleted]</code>).</li>
+        </ul>
+
+        <div class="section-title">3. External Web Account Deletion Request Form</div>
+        <p style="font-size: 14px; margin-bottom: 16px;">If you do not have access to the mobile app, enter the email address registered with your account:</p>
+
+        <form id="deletion-form">
+            <div class="form-group">
+                <label for="email">Account Email Address *</label>
+                <input type="email" id="email" required placeholder="name@example.com">
+            </div>
+            <div class="form-group">
+                <label for="reason">Reason for Deletion (Optional)</label>
+                <select id="reason">
+                    <option value="">Select a reason (optional)</option>
+                    <option value="no_longer_using">No longer using the app</option>
+                    <option value="privacy_concerns">Privacy concerns</option>
+                    <option value="created_duplicate">Created a duplicate account</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="notes">Additional Comments</label>
+                <textarea id="notes" rows="3" placeholder="Any additional notes (optional)"></textarea>
+            </div>
+            <button type="submit" class="btn-submit" id="submit-btn">Submit Account Deletion Request</button>
+            <div id="status-msg" class="status-msg" role="alert"></div>
+        </form>
+
+        <script>
+            (function() {
+                var isSubmitting = false;
+
+                function resolveApiBaseUrl() {
+                    // 1. Check window.__API_URL__ (runtime injection / test harness)
+                    if (typeof window.__API_URL__ === 'string' && window.__API_URL__.trim()) {
+                        return window.__API_URL__.trim().replace(/\/+$/, '');
+                    }
+                    // 2. Check <meta name="api-base-url"> tag (configurable at deploy time)
+                    var meta = document.querySelector('meta[name="api-base-url"]');
+                    if (meta && meta.content && meta.content.trim() && !meta.content.includes('__API_BASE_URL_PLACEHOLDER__')) {
+                        return meta.content.trim().replace(/\/+$/, '');
+                    }
+                    // 3. Detect known separate static hosting origins (Firebase, GitHub Pages, Netlify, Vercel)
+                    var hostname = window.location.hostname.toLowerCase();
+                    var isSeparateStaticHost = (
+                        hostname.endsWith('.web.app') ||
+                        hostname.endsWith('.firebaseapp.com') ||
+                        hostname.endsWith('.github.io') ||
+                        hostname.endsWith('.netlify.app') ||
+                        hostname.endsWith('.vercel.app')
+                    );
+                    if (isSeparateStaticHost) {
+                        return null; // Indicates static host with unconfigured backend API
+                    }
+                    // 4. Default: same-origin (relative path) for direct backend or local development
+                    return '';
+                }
+
+                var form = document.getElementById('deletion-form');
+                var btn = document.getElementById('submit-btn');
+                var status = document.getElementById('status-msg');
+
+                form.addEventListener('submit', async function(e) {
+                    e.preventDefault();
+                    if (isSubmitting) {
+                        return; // Prevent duplicate submission while in progress
+                    }
+
+                    var emailInput = document.getElementById('email');
+                    var reasonInput = document.getElementById('reason');
+                    var notesInput = document.getElementById('notes');
+
+                    var email = emailInput.value.trim();
+                    var reason = reasonInput.value;
+                    var notes = notesInput.value.trim();
+
+                    if (!email || email.indexOf('@') === -1) {
+                        status.className = 'status-msg status-error';
+                        status.textContent = 'Please enter a valid email address.';
+                        status.style.display = 'block';
+                        return;
+                    }
+
+                    var apiBaseUrl = resolveApiBaseUrl();
+
+                    if (apiBaseUrl === null) {
+                        // Accidental submission to static hosting domain prevented
+                        status.className = 'status-msg status-error';
+                        status.textContent = 'Online deletion intake service is temporarily awaiting server connection. Please email your deletion request directly to support@tactilearchive.org, and our compliance team will process your request within 30 days.';
+                        status.style.display = 'block';
+                        return;
+                    }
+
+                    isSubmitting = true;
+                    btn.disabled = true;
+                    btn.textContent = 'Submitting Request...';
+                    status.style.display = 'none';
+
+                    var targetUrl = apiBaseUrl ? (apiBaseUrl + '/auth/request-account-deletion') : '/auth/request-account-deletion';
+
+                    try {
+                        var response = await fetch(targetUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                email: email,
+                                reason: reason || null,
+                                notes: notes || null
+                            })
+                        });
+
+                        var data = {};
+                        try {
+                            data = await response.json();
+                        } catch (_) {
+                            // Non-JSON response (e.g. gateway error HTML)
+                        }
+
+                        if (response.ok && data.success) {
+                            status.className = 'status-msg status-success';
+                            var msg = data.message || 'Your account deletion request has been received and queued for review.';
+                            if (data.request_id) {
+                                msg += ' (Tracking Reference: ' + data.request_id + ')';
+                            }
+                            status.textContent = msg;
+                            status.style.display = 'block';
+                            form.reset();
+                        } else if (response.status === 400) {
+                            status.className = 'status-msg status-error';
+                            status.textContent = (data && typeof data.detail === 'string' && data.detail.length < 200)
+                                ? data.detail
+                                : 'A valid email address is required. Please check your input and try again.';
+                            status.style.display = 'block';
+                        } else if (response.status === 429) {
+                            status.className = 'status-msg status-error';
+                            status.textContent = 'Too many requests. Please wait a few moments before trying again or contact support@tactilearchive.org.';
+                            status.style.display = 'block';
+                        } else {
+                            status.className = 'status-msg status-error';
+                            status.textContent = 'Unable to submit request at this time. Please try again later or email support@tactilearchive.org directly.';
+                            status.style.display = 'block';
+                        }
+                    } catch (err) {
+                        status.className = 'status-msg status-error';
+                        status.textContent = 'Unable to connect to the account deletion service. Please check your internet connection or email support@tactilearchive.org directly.';
+                        status.style.display = 'block';
+                    } finally {
+                        isSubmitting = false;
+                        btn.disabled = false;
+                        btn.textContent = 'Submit Account Deletion Request';
+                    }
+                });
+            })();
+        </script>
+
+        <div class="footer">
+            Questions? Contact Privacy & Compliance: <strong>support@tactilearchive.org</strong><br>
+            The Tactile Archive &copy; 2026. All rights reserved.
+        </div>
+    </div>
+</body>
+</html>

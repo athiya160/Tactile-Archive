@@ -1,0 +1,259 @@
+import io
+import os
+import uuid
+from typing import Optional, Tuple
+from fastapi import HTTPException, UploadFile
+from PIL import Image
+
+# Maximum file size permitted for image uploads (5 MB)
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+CHUNK_SIZE = 64 * 1024           # 64 KB per stream chunk
+
+# Explicit whitelist of permitted image formats
+ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "HEIC"}
+
+FORMAT_TO_EXTENSIONS = {
+    "JPEG": {"jpg", "jpeg"},
+    "PNG": {"png"},
+    "WEBP": {"webp"},
+    "GIF": {"gif"},
+    "HEIC": {"heic", "heif"},
+}
+
+FORMAT_TO_CANONICAL_EXT = {
+    "JPEG": "jpg",
+    "PNG": "png",
+    "WEBP": "webp",
+    "GIF": "gif",
+    "HEIC": "heic",
+}
+
+FORMAT_TO_MIME = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+    "HEIC": "image/heic",
+}
+
+def detect_file_signature(data: bytes) -> Optional[str]:
+    """
+    Inspects leading magic bytes to identify the authentic file format.
+    Returns format string ('JPEG', 'PNG', 'WEBP', 'GIF', 'HEIC') or None.
+    """
+    if len(data) < 4:
+        return None
+
+    # JPEG: FF D8 FF
+    if data[:3] == b"\xff\xd8\xff":
+        return "JPEG"
+
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "PNG"
+
+    # WEBP: RIFF....WEBP
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "WEBP"
+
+    # GIF: GIF87a or GIF89a
+    if len(data) >= 6 and (data[:6] == b"GIF87a" or data[:6] == b"GIF89a"):
+        return "GIF"
+
+    # HEIC / HEIF: Box length + 'ftyp' + major or compatible brand
+    if len(data) >= 16 and data[4:8] == b"ftyp":
+        heic_brands = {b"heic", b"heix", b"hevc", b"heim", b"heis", b"mif1", b"msf1"}
+        major_brand = data[8:12]
+        if major_brand in heic_brands:
+            return "HEIC"
+        try:
+            box_len = int.from_bytes(data[0:4], byteorder="big")
+            compatible_slice = data[16:min(box_len, len(data))]
+            for i in range(0, len(compatible_slice) - 3, 4):
+                if compatible_slice[i:i+4] in heic_brands:
+                    return "HEIC"
+        except Exception:
+            pass
+
+    return None
+
+async def read_bounded_file(file: UploadFile, max_size: int = MAX_FILE_SIZE) -> bytes:
+    """
+    Reads an uploaded file stream in discrete chunks to enforce the maximum
+    file size without spooling unbounded payloads into memory.
+    Raises HTTPException(413) if size limit is exceeded.
+    Raises HTTPException(400) if the file is empty.
+    """
+    # Fast path: check known file size from headers if available
+    if getattr(file, "size", None) is not None and file.size > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum allowed size of {max_size // (1024 * 1024)}MB."
+        )
+
+    # Ensure stream cursor is at beginning
+    try:
+        await file.seek(0)
+    except Exception:
+        pass
+
+    total_bytes = 0
+    chunks = []
+    
+    while True:
+        chunk = await file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum allowed size of {max_size // (1024 * 1024)}MB."
+            )
+        chunks.append(chunk)
+
+    if total_bytes == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty."
+        )
+
+    return b"".join(chunks)
+
+def validate_image_bytes(contents: bytes, client_filename: Optional[str] = None) -> Tuple[str, str, str]:
+    """
+    Validates file signature, structural integrity, and checks for extension/content mismatches.
+    
+    Returns:
+        Tuple of (verified_format, canonical_extension, mime_type)
+        
+    Raises:
+        HTTPException(400): If signature is invalid/unsupported, image is malformed,
+                            or extension does not match verified content.
+    """
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # 1. Signature inspection (magic bytes)
+    sig_format = detect_file_signature(contents)
+    if not sig_format or sig_format not in ALLOWED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported or invalid file signature. Permitted image formats are: JPEG, PNG, WEBP, GIF, and HEIC."
+        )
+
+    # 2. Structural parsing verification using Pillow (for raster formats)
+    if sig_format in ("JPEG", "PNG", "WEBP", "GIF"):
+        try:
+            img = Image.open(io.BytesIO(contents))
+            img.verify()
+            pil_format = img.format.upper() if img.format else ""
+            if pil_format in ("JFIF", "MPO"):
+                pil_format = "JPEG"
+            if pil_format != sig_format:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File signature ({sig_format}) does not match decoded image format ({pil_format})."
+                )
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(
+                status_code=400,
+                detail=f"Malformed or corrupted image file: {str(e)}"
+            )
+    elif sig_format == "HEIC":
+        # Ensure minimal viable ISOBMFF box size and structure
+        if len(contents) < 24:
+            raise HTTPException(
+                status_code=400,
+                detail="Malformed or truncated HEIC image file."
+            )
+        try:
+            box_len = int.from_bytes(contents[0:4], byteorder="big")
+            if box_len < 16 or box_len > len(contents) or contents[4:8] != b"ftyp":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Malformed or truncated HEIC image file header."
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Malformed or truncated HEIC image file."
+            )
+
+    # 3. Extension and content mismatch check
+    if client_filename:
+        if "\x00" in client_filename:
+            raise HTTPException(status_code=400, detail="Null byte detected in filename.")
+
+        # Strip directory path to neutralize traversal tokens in filename
+        clean_name = os.path.basename(client_filename).strip()
+        if "." in clean_name:
+            client_ext = clean_name.rsplit(".", 1)[-1].lower()
+            allowed_exts = FORMAT_TO_EXTENSIONS[sig_format]
+            if client_ext not in allowed_exts:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File extension '.{client_ext}' does not match verified image content ({sig_format})."
+                )
+
+    canonical_ext = FORMAT_TO_CANONICAL_EXT[sig_format]
+    mime_type = FORMAT_TO_MIME[sig_format]
+    return sig_format, canonical_ext, mime_type
+
+def generate_secure_storage_filename(canonical_ext: str) -> str:
+    """
+    Generates a cryptographically random, server-controlled storage filename.
+    Never uses user-supplied paths, directory tokens, or raw client names.
+    """
+    return f"{uuid.uuid4().hex}.{canonical_ext}"
+
+def resolve_safe_local_path(filename: str, base_dir: str) -> str:
+    """
+    Resolves the storage destination path, enforcing that it strictly resides
+    inside base_dir and preventing directory traversal attacks.
+    """
+    base_abs = os.path.abspath(base_dir)
+    safe_name = os.path.basename(filename)
+    
+    if safe_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid storage filename detected."
+        )
+
+    target_abs = os.path.abspath(os.path.join(base_abs, safe_name))
+    
+    # Verify the target path resides strictly inside base_abs
+    if not target_abs.startswith(base_abs + os.sep) and target_abs != base_abs:
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected."
+        )
+
+    return target_abs
+
+def get_storage_status() -> dict:
+    """
+    Inspects whether the current storage configuration provides durable cloud persistence
+    or is falling back to ephemeral local container disk storage.
+    """
+    from app.core.storage import check_s3_configured, AWS_STORAGE_BUCKET_NAME, AWS_S3_REGION
+    is_durable = check_s3_configured()
+    
+    return {
+        "backend": "AWS_S3" if is_durable else "LOCAL_DISK",
+        "is_durable": is_durable,
+        "bucket": AWS_STORAGE_BUCKET_NAME if is_durable else None,
+        "region": AWS_S3_REGION if is_durable else None,
+        "ephemeral_warning": (
+            "WARNING: AWS S3 is not configured. Uploads are stored on the local container disk, "
+            "which is EPHEMERAL in cloud hosting environments (Cloud Run, ECS, Kubernetes, Railway). "
+            "Any container restart or deployment will permanently erase uploaded media. "
+            "Configure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_STORAGE_BUCKET_NAME for durable storage."
+            if not is_durable else None
+        )
+    }

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<p>Hello,</p>
+<p>Please verify your email address to unlock full access to The Tactile Archive.</p>
+<p style="text-align: center;">
+    <a href="{{ verify_link }}" class="btn">Verify Email</a>
+</p>
+<p style="font-size: 13px; color: #737973;">This link expires in 24 hours. If the button doesn't work, copy and paste this link into your browser: <br>{{ verify_link }}</p>
+{% endblock %}

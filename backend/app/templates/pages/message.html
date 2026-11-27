@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - The Tactile Archive{% endblock %}
+{% block content %}
+{% if is_success %}
+<div class="success-icon">✓</div>
+{% else %}
+<div class="error-icon">✕</div>
+{% endif %}
+<h2>{{ heading }}</h2>
+<p>{{ message }}</p>
+{% if show_login %}
+<a href="/" class="btn" style="margin-top: 15px;">Return to Login</a>
+{% elif not is_success %}
+<a href="javascript:history.back()" class="btn btn-outline" style="margin-top: 15px; display:inline-block; text-decoration:none;">Go Back and Try Again</a>
+{% endif %}
+{% endblock %}

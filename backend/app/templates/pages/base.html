@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}The Tactile Archive{% endblock %}</title>
+    <style>
+        body { font-family: 'Inter', Arial, sans-serif; background-color: #FAF9F5; color: #1A1C1A; margin: 0; padding: 40px 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .card { background: #FFFFFF; max-width: 450px; width: 100%; padding: 40px; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.08); text-align: center; border-top: 4px solid #0B3D2E; }
+        .logo { font-size: 24px; font-weight: bold; color: #0B3D2E; margin-bottom: 20px; }
+        h2 { color: #1A1C1A; margin-top: 0; margin-bottom: 10px; font-size: 22px; }
+        p { color: #737973; line-height: 1.5; margin-bottom: 25px; }
+        .form-group { text-align: left; margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; color: #1A1C1A; font-size: 14px; }
+        input[type="password"], input[type="email"], input[type="text"] { width: 100%; padding: 12px; border: 1px solid #E0E0E0; border-radius: 6px; box-sizing: border-box; font-size: 15px; font-family: inherit; }
+        input[type="password"]:focus, input[type="email"]:focus, input[type="text"]:focus { outline: none; border-color: #0B3D2E; box-shadow: 0 0 0 3px rgba(11,61,46,0.1); }
+        .password-wrapper { position: relative; display: flex; align-items: center; width: 100%; }
+        .password-wrapper input { padding-right: 42px; }
+        .password-toggle-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; padding: 4px; color: #737973; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: color 0.2s ease; }
+        .password-toggle-btn:hover { color: #0B3D2E; }
+        .password-toggle-btn:focus { outline: 2px solid #0B3D2E; }
+        .error-banner { background-color: #FDEDED; border: 1px solid #F5C2C7; color: #D32F2F; padding: 12px 14px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; text-align: left; line-height: 1.4; display: none; }
+        .btn { display: inline-block; width: 100%; padding: 14px; background-color: #0B3D2E; color: #FFFFFF; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; text-decoration: none; transition: background 0.3s; box-sizing: border-box; margin-bottom: 10px; }
+        .btn:hover { background-color: #082D22; }
+        .btn:disabled { opacity: 0.65; cursor: not-allowed; }
+        .btn-outline { background-color: transparent; border: 2px solid #0B3D2E; color: #0B3D2E; margin-bottom: 0;}
+        .btn-outline:hover { background-color: #f0f5f3; }
+        .error-msg { color: #D32F2F; font-size: 14px; margin-top: 5px; text-align: left; }
+        .success-icon { font-size: 48px; color: #4CAF50; margin-bottom: 20px; }
+        .error-icon { font-size: 48px; color: #D32F2F; margin-bottom: 20px; }
+        ul { text-align: left; color: #737973; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">The Tactile Archive</div>
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

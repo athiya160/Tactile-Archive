@@ -1,0 +1,120 @@
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+import shutil
+import os
+import uuid
+from app.core.database import SessionLocal
+from app.api.auth import get_current_user
+from app.models.user import User
+from app.core.storage import upload_image_to_s3
+
+router = APIRouter()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+UPLOAD_DIR = "images"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB limit
+
+import mimetypes
+
+@router.post("/uploads/image")
+async def upload_image(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user)
+):
+    content_type = file.content_type
+    if not content_type or content_type in ("application/octet-stream", "binary/octet-stream"):
+        guessed_type, _ = mimetypes.guess_type(file.filename or "")
+        if guessed_type:
+            content_type = guessed_type
+            
+    if not content_type or not content_type.startswith("image/"):
+        ext = (file.filename or "").split(".")[-1].lower()
+        if ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "heif"):
+            content_type = f"image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+        else:
+            # Default to jpeg if no valid extension is found to support mobile pickers
+            content_type = "image/jpeg"
+            
+    ext = (file.filename or "upload.jpeg").split(".")[-1]
+    if ext.lower() not in ("jpg", "jpeg", "png", "webp", "gif", "heic", "heif"):
+        ext = "jpeg"
+        
+    filename = f"{uuid.uuid4()}.{ext}"
+    
+    # Read file content for S3 / local writing
+    contents = await file.read()
+    
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=f"File {file.filename} is too large. Maximum allowed size is 5MB.")
+    
+    # 1. Try AWS S3 Upload
+    s3_url = upload_image_to_s3(contents, filename, content_type)
+    if s3_url:
+        return {"url": s3_url}
+        
+    # 2. Fallback to Local Storage
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(contents)
+        
+    # Dynamically resolve host using request base URL to support mobile access
+    base_url = str(request.base_url).rstrip("/")
+    file_url = f"{base_url}/images/{filename}"
+    return {"url": file_url}
+
+from typing import List
+
+@router.post("/uploads/book-images")
+async def upload_book_images(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    user: User = Depends(get_current_user)
+):
+    urls = []
+    for file in files:
+        content_type = file.content_type
+        if not content_type or content_type in ("application/octet-stream", "binary/octet-stream"):
+            guessed_type, _ = mimetypes.guess_type(file.filename or "")
+            if guessed_type:
+                content_type = guessed_type
+                
+        if not content_type or not content_type.startswith("image/"):
+            ext = (file.filename or "").split(".")[-1].lower()
+            if ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "heif"):
+                content_type = f"image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+            else:
+                content_type = "image/jpeg"
+                
+        ext = (file.filename or "upload.jpeg").split(".")[-1]
+        if ext.lower() not in ("jpg", "jpeg", "png", "webp", "gif", "heic", "heif"):
+            ext = "jpeg"
+            
+        filename = f"{uuid.uuid4()}.{ext}"
+        contents = await file.read()
+        
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail=f"File {file.filename} is too large. Maximum allowed size is 5MB.")
+        
+        # 1. Try AWS S3 Upload
+        s3_url = upload_image_to_s3(contents, filename, content_type)
+        if s3_url:
+            urls.append(s3_url)
+        else:
+            # 2. Fallback to Local Storage
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            with open(file_path, "wb") as buffer:
+                buffer.write(contents)
+            base_url = str(request.base_url).rstrip("/")
+            urls.append(f"{base_url}/images/{filename}")
+            
+    return {"urls": urls}

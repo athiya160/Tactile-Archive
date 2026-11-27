@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: libriflow_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-libriflow_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-libriflow_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-libriflow_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-libriflow_user}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: libriflow_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-libriflow_user}:${POSTGRES_PASSWORD:-libriflow_pass}@postgres:5432/${POSTGRES_DB:-libriflow_db}
+      - SECRET_KEY=${SECRET_KEY:-dev_secret_key_change_in_production}
+      - ENVIRONMENT=development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  adminer:
+    image: adminer:latest
+    container_name: libriflow_adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:

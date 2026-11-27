@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<p>Hello,</p>
+<p>Your order has been successfully placed!</p>
+<p><strong>Order Summary:</strong></p>
+<ul>
+    <li>Total Items: {{ total_items }}</li>
+    <li>Total Price: ${{ "%.2f"|format(total_price) }}</li>
+</ul>
+<p>You can view your full order details and track your shipment in your dashboard.</p>
+<p>Thank you for choosing The Tactile Archive.</p>
+{% endblock %}

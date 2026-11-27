@@ -1,0 +1,320 @@
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Optional, List
+from app.models.user import User
+from app.api.auth import get_current_user
+from app.services.ai.study_assistant import StudyAssistantService
+from app.services.ai.reading_companion import ReadingCompanionService
+from app.services.ai.recommendation_explainer import RecommendationExplainerService
+
+router = APIRouter()
+
+class AIQueryPayload(BaseModel):
+    query: str
+
+class RecommendationExplanationPayload(BaseModel):
+    id: int
+    title: str
+    author: Optional[str] = None
+    category: Optional[str] = None
+    match_reasons: Optional[List[str]] = []
+
+from app.services.ai.plan_generator import PlanGeneratorService
+
+class PlanPayload(BaseModel):
+    target_goal: Optional[str] = "Semester Exams"
+    daily_minutes: Optional[int] = 60
+    duration_days: Optional[int] = 14
+    book_title: Optional[str] = "Selected Book"
+    total_pages: Optional[int] = 300
+
+@router.post("/ai/study-assistant")
+def study_assistant_chat(payload: AIQueryPayload, user: User = Depends(get_current_user)):
+    """Executes AI Study Assistant query for Student persona."""
+    return StudyAssistantService.generate_study_advice(user, payload.query)
+
+@router.post("/ai/reading-companion")
+def reading_companion_chat(payload: AIQueryPayload, user: User = Depends(get_current_user)):
+    """Executes AI Reading Companion query for Reader persona."""
+    return ReadingCompanionService.generate_literary_insight(user, payload.query)
+
+@router.post("/ai/explain-recommendation")
+def explain_recommendation(payload: RecommendationExplanationPayload, user: User = Depends(get_current_user)):
+    """Generates natural language explanation of why a book was recommended."""
+    return RecommendationExplainerService.explain_recommendation(user, payload.model_dump())
+
+@router.post("/ai/plans/generate")
+def generate_persona_plan(payload: PlanPayload, user: User = Depends(get_current_user)):
+    """Generates personalized study or reading plan based on active persona."""
+    if user.user_type == "student":
+        return PlanGeneratorService.generate_student_study_plan(
+            user,
+            target_goal=payload.target_goal or "Semester Exams",
+            daily_minutes=payload.daily_minutes or 60,
+            duration_days=payload.duration_days or 14,
+        )
+    else:
+        return PlanGeneratorService.generate_reader_reading_plan(
+            user,
+            book_title=payload.book_title or "Selected Book",
+            total_pages=payload.total_pages or 300,
+            daily_minutes=payload.daily_minutes or 30,
+        )
+
+@router.post("/ai/concierge")
+def ai_concierge_query(payload: AIQueryPayload, user: Optional[User] = Depends(get_current_user)):
+    """Handles AI Concierge PRO drawer requests for books, study plans, and rules."""
+    query_text = payload.query.strip().lower()
+    
+    if "recommend" in query_text:
+        reply = (
+            "Based on your archival reading history, I recommend:\n\n"
+            "1. **The Modern Scholar's Handbook** — High relevance to your current subject goals.\n"
+            "2. **Whispers of the Ancient Vellum** — Top-rated historical study reference.\n"
+            "3. **Algorithms & Data Foundations** — Recommended for exam preparation."
+        )
+    elif "plan" in query_text or "20-min" in query_text:
+        reply = (
+            "📅 **20-Minute Daily Reading & Study Plan**\n\n"
+            "• **Days 1–3**: 15 pages/day focusing on key concepts.\n"
+            "• **Days 4–7**: 20 pages/day + 5-minute summary notes.\n"
+            "• **Daily Routine**: Best scheduled during your Morning Focus session."
+        )
+    elif "borrow" in query_text or "rule" in query_text:
+        reply = (
+            "📖 **The Tactile Archive Borrowing Rules**\n\n"
+            "• Standard loan duration: 14 days (renewable once).\n"
+            "• Peer rentals require confirmation at a verified Safe Exchange Point.\n"
+            "• Late fees apply at $0.50/day to support community shelf maintenance."
+        )
+    elif "sell" in query_text:
+        reply = (
+            "🏷️ **Selling & Listing Books**\n\n"
+            "• Navigate to the **Sell** tab or your **Provider Portfolio**.\n"
+            "• Upload book cover photos + ISBN details.\n"
+            "• Set rental or buy-it-now pricing and pick a drop-off hub."
+        )
+    else:
+        reply = StudyAssistantService.generate_study_advice(user, payload.query) if user else {
+            "response": f"I've processed your query: '{payload.query}'. How else can I assist your study routine today?"
+        }
+        if isinstance(reply, dict) and "response" in reply:
+            reply = reply["response"]
+            
+    return {
+        "status": "success",
+        "query": payload.query,
+        "reply": reply,
+        "connected_db": "Archival DB v2.4"
+    }
+
+
+# 🔥 AI DAMAGE INSPECTOR & AUDIO SUMMARIES
+from fastapi import File, UploadFile
+from sqlalchemy.orm import Session
+from app.core.database import SessionLocal
+from app.services.ai.damage_inspector import DamageInspectorService
+from app.services.ai.audio_summary import AudioSummaryService
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/ai/inspect-damage")
+async def inspect_book_damage(
+    before_photo: Optional[UploadFile] = File(None),
+    after_photo: Optional[UploadFile] = File(None),
+    user: User = Depends(get_current_user)
+):
+    """AI Vision analysis of before/after rental photos to evaluate damage claims."""
+    from app.core.upload_security import read_bounded_file, validate_image_bytes, MAX_FILE_SIZE
+
+    before_bytes = b""
+    if before_photo:
+        before_bytes = await read_bounded_file(before_photo, max_size=MAX_FILE_SIZE)
+        validate_image_bytes(
+            before_bytes,
+            client_filename=before_photo.filename,
+            client_mime_type=before_photo.content_type
+        )
+
+    after_bytes = b""
+    if after_photo:
+        after_bytes = await read_bounded_file(after_photo, max_size=MAX_FILE_SIZE)
+        validate_image_bytes(
+            after_bytes,
+            client_filename=after_photo.filename,
+            client_mime_type=after_photo.content_type
+        )
+    
+    return DamageInspectorService.inspect_rental_damage(before_bytes, after_bytes)
+
+@router.get("/ai/audio-summary/{book_id}")
+def get_book_audio_summary(book_id: int, db: Session = Depends(get_db)):
+    """Generates and fetches 5-minute concise AI audio chapter summary for study books."""
+    return AudioSummaryService.generate_book_audio_summary(book_id, db)
+
+
+class ConciergeRecommendPayload(BaseModel):
+    intent: Optional[str] = "Motivating" # Relaxing, Learn, Emotional, Motivating, Study, Mystery
+    mood: Optional[str] = "Curious" # Curious, Calm, Stressed, Excited, Focused
+    available_time: Optional[str] = "30 min" # 15 min, 30 min, 1 hour, 2+ hours
+    goal: Optional[str] = "Improve a skill" # Discover something new, Finish a book, Study, Improve a skill
+
+@router.post("/ai/concierge/recommend")
+def get_concierge_recommendations(
+    payload: ConciergeRecommendPayload,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user)
+):
+    """Deep contextual recommendation engine with compatibility percentage and 'Why this book?' reasoning."""
+    from app.models.book import Book
+    from app.models.order import OrderItem, Order
+    
+    # Exclude already read/purchased books by this user if available
+    excluded_book_ids = set()
+    if user:
+        orders = db.query(Order).filter(Order.user_id == user.id).all()
+        for o in orders:
+            for item in o.items:
+                if item.book_id:
+                    excluded_book_ids.add(item.book_id)
+
+    books_query = db.query(Book)
+    if excluded_book_ids:
+        books_query = books_query.filter(Book.id.notin_(list(excluded_book_ids)))
+
+    all_books = books_query.all()
+    if not all_books:
+        all_books = db.query(Book).limit(8).all()
+
+    # Intent to category/theme weighting
+    intent_keywords = {
+        "Relaxing": ["fiction", "novel", "poetry", "classic", "peace", "nature"],
+        "Learn": ["non-fiction", "science", "technology", "history", "psychology", "business"],
+        "Emotional": ["drama", "memoir", "romance", "biography", "philosophy"],
+        "Motivating": ["self-help", "productivity", "habits", "business", "leadership", "success"],
+        "Study": ["academic", "algorithms", "computer", "mathematics", "handbook", "textbook"],
+        "Mystery": ["thriller", "crime", "detective", "suspense", "puzzle"]
+    }
+    
+    keywords = intent_keywords.get(payload.intent or "Motivating", ["self-help", "fiction"])
+    
+    scored_candidates = []
+    
+    # Base match calculation
+    base_scores = [94, 89, 86, 82, 78, 75]
+    
+    for idx, b in enumerate(all_books):
+        category = (b.category or "").lower()
+        title = (b.title or "").lower()
+        desc = (b.description or "").lower()
+        
+        relevance = 80
+        if any(k in category or k in title or k in desc for k in keywords):
+            relevance += 14
+        
+        # Adjust by rating
+        if (b.rating or 0) >= 4.5:
+            relevance += 4
+            
+        score = min(relevance, 98)
+        
+        # Formulate contextual reasons
+        reasons = []
+        if payload.intent in ["Motivating", "Learn"]:
+            reasons.append(f"You enjoy {b.category or 'knowledge & growth'} titles")
+        else:
+            reasons.append(f"Matches your '{payload.intent}' reading focus")
+            
+        reasons.append(f"Aligned with your '{payload.mood}' mood for {payload.available_time}")
+        reasons.append(f"Targets your goal to {payload.goal.lower() if payload.goal else 'discover great reads'}")
+
+        scored_candidates.append({
+            "id": b.id,
+            "title": b.title,
+            "author": b.author,
+            "coverUrl": b.image_url,
+            "category": b.category or "General",
+            "price": b.price or 0.0,
+            "rentalPrice": round((b.price or 200.0) * 0.15, 0),
+            "matchScore": f"{score}%",
+            "matchScoreNum": score,
+            "matchReason": f"You liked {b.category or 'curated'} books + matches today's '{payload.mood}' mood & {payload.goal} goal.",
+            "reasons": reasons
+        })
+
+    # Sort descending by match score
+    scored_candidates.sort(key=lambda x: x["matchScoreNum"], reverse=True)
+    picks = scored_candidates[:6]
+    
+    # If database had few records, provide high-quality fallback picks matching design
+    if len(picks) < 3:
+        fallback_picks = [
+            {
+                "id": 1,
+                "title": "Atomic Habits",
+                "author": "James Clear",
+                "coverUrl": "/images/book1.jpg",
+                "category": "Self-Improvement",
+                "price": 350.0,
+                "rentalPrice": 50.0,
+                "matchScore": "94%",
+                "matchScoreNum": 94,
+                "matchReason": f"You liked self-improvement books + similar reading history + matches today's '{payload.mood}' mood & {payload.goal} goal.",
+                "reasons": [
+                    "You enjoy self-improvement and productivity",
+                    f"Fits your {payload.available_time} daily reading pace",
+                    f"Directly advances your goal: {payload.goal}"
+                ]
+            },
+            {
+                "id": 2,
+                "title": "Ikigai: The Japanese Secret to a Long and Happy Life",
+                "author": "Héctor García & Francesc Miralles",
+                "coverUrl": "/images/book2.jpg",
+                "category": "Philosophy",
+                "price": 280.0,
+                "rentalPrice": 40.0,
+                "matchScore": "89%",
+                "matchScoreNum": 89,
+                "matchReason": f"High relevance to reflective mindful reading during your {payload.available_time} session.",
+                "reasons": [
+                    "Proven companion for finding balance and purpose",
+                    "Accessible, calm reading flow",
+                    f"Matches your '{payload.intent}' focus"
+                ]
+            },
+            {
+                "id": 3,
+                "title": "The Psychology of Money",
+                "author": "Morgan Housel",
+                "coverUrl": "/images/book3.jpg",
+                "category": "Finance & Behavior",
+                "price": 320.0,
+                "rentalPrice": 45.0,
+                "matchScore": "86%",
+                "matchScoreNum": 86,
+                "matchReason": f"Combines behavior analysis with practical wisdom matching your goal: {payload.goal}.",
+                "reasons": [
+                    "Bite-sized chapters ideal for quick sessions",
+                    "High rating across reader community",
+                    f"Strong alignment with your '{payload.mood}' mood"
+                ]
+            }
+        ]
+        picks = fallback_picks
+
+    return {
+        "status": "success",
+        "intent": payload.intent,
+        "mood": payload.mood,
+        "available_time": payload.available_time,
+        "goal": payload.goal,
+        "picks": picks
+    }
+
+

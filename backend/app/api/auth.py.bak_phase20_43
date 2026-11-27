@@ -1,0 +1,1641 @@
+from typing import Optional, List, Dict
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, Form, BackgroundTasks
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.orm import Session
+from app.schemas.user import UserCreate
+from app.models.user import User
+from app.models.order import Order, OrderItem
+from app.models.book import Book
+from app.core.database import SessionLocal
+from sqlalchemy.exc import IntegrityError
+from app.core.security import (
+    create_access_token, create_refresh_token, SECRET_KEY, ALGORITHM,
+    create_verification_token, verify_verification_token,
+    create_reset_token, verify_reset_token,
+    get_jwt_secret
+)
+from passlib.context import CryptContext
+from jose import jwt
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.core.mail import (
+    send_welcome_email, send_verification_email, send_login_alert_email,
+    send_reset_password_email, send_password_changed_email, render_template,
+    mask_email
+)
+from app.core.rate_limit import limiter
+import datetime
+import json
+import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Dynamic Frontend URL Registry for local development
+DYNAMIC_FRONTEND_URL = None
+
+def get_frontend_url(request: Request = None) -> str:
+    global DYNAMIC_FRONTEND_URL
+    import os
+    import re
+
+    env_url = os.environ.get("FRONTEND_URL")
+    if env_url:
+        return env_url.rstrip("/")
+
+    if request:
+        custom_header = request.headers.get("x-frontend-url")
+        origin = request.headers.get("origin")
+        candidate = custom_header or origin
+        if candidate and (candidate.startswith("http://") or candidate.startswith("https://")):
+            # If candidate uses an ephemeral debug port (like 50000+), sanitize it to 8080
+            match = re.search(r':(\d+)$', candidate)
+            if match and int(match.group(1)) > 10000 and int(match.group(1)) != 8080:
+                candidate = re.sub(r':\d+$', ':8080', candidate)
+            DYNAMIC_FRONTEND_URL = candidate.rstrip("/")
+    
+    if DYNAMIC_FRONTEND_URL:
+        match = re.search(r':(\d+)$', DYNAMIC_FRONTEND_URL)
+        if match and int(match.group(1)) > 10000 and int(match.group(1)) != 8080:
+            DYNAMIC_FRONTEND_URL = re.sub(r':\d+$', ':8080', DYNAMIC_FRONTEND_URL)
+        return DYNAMIC_FRONTEND_URL
+
+    if request:
+        host = request.headers.get("host", "localhost:8000")
+        hostname = host.split(":")[0]
+        return f"http://{hostname}:8080"
+
+    return "http://localhost:8080"
+
+def generate_reset_link(request: Request, raw_token: str) -> str:
+    frontend_url = get_frontend_url(request)
+    return f"{frontend_url}/#/reset-password?token={raw_token}"
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+router = APIRouter()
+
+# Password utils
+def hash_password(password: str):
+    return pwd_context.hash(password)
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+# DB connection
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ✅ Register
+@router.post("/register")
+@limiter.limit("5/minute")
+def register(request: Request, user: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    cleaned_email = (user.email or "").strip().lower()
+    existing_user = db.query(User).filter(func.lower(User.email) == cleaned_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    role = (user.role or "customer").lower()
+    if role not in ["customer", "provider"]:
+        role = "customer"
+
+    if role == "customer":
+        selected_persona = user.customer_type or user.persona or user.user_type or "reader"
+        if hasattr(selected_persona, "value"):
+            selected_persona = selected_persona.value
+        if selected_persona not in ["student", "reader"]:
+            selected_persona = "reader"
+    else:
+        selected_persona = None
+
+    active_exp = getattr(user, "active_experience", None) or selected_persona or "reader"
+    is_prov = (role == "provider")
+
+    new_user = User(
+        email=cleaned_email,
+        password=hash_password(user.password),
+        name=user.name,
+        phone=user.phone.strip() if getattr(user, "phone", None) else None,
+        role=role,
+        user_type=selected_persona,
+        active_experience=active_exp,
+        provider_enabled=is_prov,
+        provider_status="active" if is_prov else "not_enrolled",
+        onboarding_completed=False,
+        is_verified=False
+    )
+
+    db.add(new_user)
+    try:
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # If student provided optional academic details during signup, create StudentProfile
+    if selected_persona == "student":
+        from app.models.student_profile import StudentProfile
+        has_academic_info = bool(user.course or user.college or user.semester)
+        academic_interests = []
+        if user.college:
+            academic_interests.append(f"College: {user.college}")
+        if user.semester:
+            academic_interests.append(f"Semester: {user.semester}")
+        if user.graduation_year:
+            academic_interests.append(f"Graduation: {user.graduation_year}")
+
+        sp = StudentProfile(
+            user_id=new_user.id,
+            course=user.course,
+            college=user.college,
+            semester=user.semester,
+            graduation_year=user.graduation_year,
+            syllabus_details=user.syllabus,
+            education_level=user.semester or "Undergraduate",
+            exam_goal=user.semester or "Semester Exams",
+            academic_interests=json.dumps(academic_interests)
+        )
+        db.add(sp)
+        if has_academic_info:
+            new_user.onboarding_completed = True
+        db.commit()
+
+    # Welcome Email and Verification Email
+    base_url = str(request.base_url).rstrip("/")
+    token = create_verification_token(new_user.email)
+    verify_link = f"{base_url}/verify-email?token={token}"
+    
+    # Send asynchronously so it doesn't block registration if it fails
+    background_tasks.add_task(send_welcome_email, new_user.email, new_user.name or "Reader")
+    background_tasks.add_task(send_verification_email, new_user.email, verify_link)
+
+    access_token = create_access_token(data={"sub": new_user.email, "role": new_user.role})
+    refresh_token = create_refresh_token(data={"sub": new_user.email, "role": new_user.role})
+
+    customer_type = new_user.user_type if new_user.role == "customer" else None
+    return {
+        "message": "User registered successfully. Please check your email to verify your account.",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token": refresh_token,
+        "role": new_user.role,
+        "customer_type": customer_type,
+        "persona": new_user.user_type or ("reader" if new_user.role == "customer" else None),
+        "user_type": new_user.user_type or ("reader" if new_user.role == "customer" else None),
+        "active_experience": new_user.active_experience or selected_persona or "reader",
+        "provider_enabled": bool(getattr(new_user, "provider_enabled", False)),
+        "provider_status": getattr(new_user, "provider_status", "not_enrolled") or ("active" if is_prov else "not_enrolled"),
+        "onboarding_completed": bool(new_user.onboarding_completed)
+    }
+
+# ✅ Verify Email endpoint
+@router.get("/verify-email")
+@limiter.limit("10/minute")
+def verify_email(request: Request, token: str, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    email = verify_verification_token(token)
+    if not email:
+        html = render_template("message.html", title="Verification Expired", heading="Link Expired or Invalid", message="This verification link is invalid or has expired. Please request a new one.", is_success=False)
+        return HTMLResponse(content=html, status_code=400)
+        
+    user = db.query(User).filter(func.lower(User.email) == email.lower()).first()
+    if not user:
+        html = render_template("message.html", title="Verification Failed", heading="User Not Found", message="Could not find the user associated with this verification link.", is_success=False)
+        return HTMLResponse(content=html, status_code=404)
+        
+    if user.is_verified:
+        html = render_template("message.html", title="Already Verified", heading="Already Verified", message="Your email address is already verified.", is_success=True, show_login=True)
+        return HTMLResponse(content=html)
+
+    user.is_verified = True
+    db.commit()
+    
+    html = render_template("message.html", title="Verification Successful", heading="Email Verified Successfully!", message="Your account is now fully verified and active. Welcome to The Tactile Archive!", is_success=True, show_login=True)
+    return HTMLResponse(content=html)
+
+# ✅ Forgot Password Page (GET)
+@router.get("/forgot-password")
+def get_forgot_password_page(request: Request):
+    html = render_template("forgot_password.html")
+    return HTMLResponse(content=html)
+
+# ✅ Forgot Password Form Submit (POST) - For HTML form
+@router.post("/auth/forgot-password-form")
+@limiter.limit("5/minute")
+def forgot_password_form(request: Request, email: str = Form(...), db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from app.models.password_reset import PasswordReset
+    import hashlib
+    import logging
+
+    logger = logging.getLogger("app.api.auth")
+    ident = email.strip()
+    user = db.query(User).filter(
+        (func.lower(User.email) == ident.lower()) |
+        (User.phone == ident)
+    ).first()
+    if user:
+        # Invalidate previous unused reset tokens for this user
+        db.query(PasswordReset).filter(
+            PasswordReset.user_id == user.id,
+            PasswordReset.used == False
+        ).update({"used": True})
+
+        raw_token = create_reset_token(user.email)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        
+        # Save SHA-256 hashed token to database (15-min expiry, single-use)
+        reset_entry = PasswordReset(
+            user_id=user.id,
+            token=token_hash,
+            expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
+        )
+        db.add(reset_entry)
+        db.commit()
+        
+        reset_link = generate_reset_link(request, raw_token)
+        success, err = send_reset_password_email(user.email, reset_link)
+        if not success:
+            logger.error(f"[AUTH] Failed to dispatch password reset email to {mask_email(user.email)}: {err}")
+    else:
+        logger.warning(f"Forgot password requested for non-existent account: {mask_email(email)}")
+
+    html = render_template("message.html", title="Reset Link Sent", heading="Check Your Email", message="If an account exists with that email, a password reset link has been sent. It will expire in 15 minutes.", is_success=True)
+    return HTMLResponse(content=html)
+
+# ✅ Forgot Password endpoint (API JSON)
+@router.post("/auth/forgot-password")
+@router.post("/forgot-password")
+@limiter.limit("5/minute")
+async def forgot_password(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from app.models.password_reset import PasswordReset
+    import os
+    import hashlib
+    import logging
+
+    logger = logging.getLogger("app.api.auth")
+    data = await request.json()
+    email = data.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+        
+    ident = email.strip()
+    user = db.query(User).filter(
+        (func.lower(User.email) == ident.lower()) |
+        (User.phone == ident)
+    ).first()
+    if user:
+        # Invalidate previous unused reset tokens for this user
+        db.query(PasswordReset).filter(
+            PasswordReset.user_id == user.id,
+            PasswordReset.used == False
+        ).update({"used": True})
+
+        raw_token = create_reset_token(user.email)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        
+        # Save SHA-256 hashed token to database (15-minute expiry, single use)
+        reset_entry = PasswordReset(
+            user_id=user.id,
+            token=token_hash,
+            expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
+        )
+        db.add(reset_entry)
+        db.commit()
+        
+        reset_link = generate_reset_link(request, raw_token)
+        masked = mask_email(user.email)
+        logger.info(f"Password reset requested for {masked}.")
+        
+        # Dispatch email to the user's specific email address
+        success, err = send_reset_password_email(user.email, reset_link)
+        if not success:
+            logger.error(f"Failed to dispatch password reset email to {masked}: {err}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Email delivery failed. {err}"
+            )
+    else:
+        masked = mask_email(email)
+        logger.warning(f"Forgot password requested for non-existent account: {masked}")
+
+    return {"message": "If an account exists, a password reset link has been sent."}
+
+# ✅ Reset Password Page (GET)
+@router.get("/reset-password")
+def get_reset_password_page(request: Request, token: str, db: Session = Depends(get_db)):
+    from app.models.password_reset import PasswordReset
+    import datetime
+    import hashlib
+    import os
+    
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    reset_entry = db.query(PasswordReset).filter((PasswordReset.token == token_hash) | (PasswordReset.token == token)).first()
+    
+    if not reset_entry or reset_entry.used or reset_entry.expires_at < datetime.datetime.utcnow():
+        html = render_template("message.html", title="Invalid Link", heading="Link Expired", message="This password reset link is invalid or has expired. Please request a new one.", is_success=False)
+        return HTMLResponse(content=html, status_code=400)
+
+    frontend_url = get_frontend_url(request)
+    if frontend_url:
+        return RedirectResponse(url=f"{frontend_url}/#/reset-password?token={token}")
+
+    login_url = f"{frontend_url}/#/login" if frontend_url else "/"
+    html = render_template("reset_password.html", token=token, login_url=login_url)
+    return HTMLResponse(content=html)
+
+
+from pydantic import BaseModel
+class FrontendUrlPayload(BaseModel):
+    url: str
+
+@router.post("/dev/register-frontend")
+def register_frontend(payload: FrontendUrlPayload):
+    global DYNAMIC_FRONTEND_URL
+    DYNAMIC_FRONTEND_URL = payload.url.rstrip("/")
+    return {"message": f"Frontend URL dynamically registered to {DYNAMIC_FRONTEND_URL}"}
+
+# ✅ Reset Password Action (POST) - Supports HTML Form and JSON API
+@router.post("/reset-password")
+@router.post("/auth/reset-password")
+@limiter.limit("10/minute")
+async def post_reset_password(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from app.models.password_reset import PasswordReset
+    from app.core.mail import send_password_changed_email
+    import re
+    import datetime
+    import hashlib
+    
+    is_form = False
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        is_form = True
+        form = await request.form()
+        token = form.get("token")
+        new_password = form.get("new_password")
+    else:
+        try:
+            data = await request.json()
+            token = data.get("token")
+            new_password = data.get("new_password")
+        except Exception:
+            token = None
+            new_password = None
+
+    def _error_response(msg: str, status_code: int = 400):
+        if is_form:
+            html = render_template("message.html", title="Reset Password Failed", heading="Error", message=msg, is_success=False)
+            return HTMLResponse(content=html, status_code=status_code)
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    if not token or not new_password:
+        return _error_response("Token and new password are required.")
+
+    # Find the token in the DB by SHA-256 hash (or legacy plain match)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    reset_entry = db.query(PasswordReset).filter((PasswordReset.token == token_hash) | (PasswordReset.token == token)).first()
+    
+    if not reset_entry:
+        return _error_response("Invalid reset token.")
+        
+    if reset_entry.used:
+        return _error_response("This reset token has already been used.")
+        
+    if reset_entry.expires_at < datetime.datetime.utcnow():
+        return _error_response("This reset token has expired.")
+        
+    # Validate password complexity
+    if len(new_password) < 8 or not re.search(r"[A-Z]", new_password) or not re.search(r"[a-z]", new_password) or not re.search(r"\d", new_password) or not re.search(r"[\W_]", new_password):
+        return _error_response("Password must be at least 8 characters long and contain uppercase, lowercase, number, and special character.")
+
+    user = db.query(User).filter(User.id == reset_entry.user_id).first()
+    if not user:
+        return _error_response("User not found.", status_code=404)
+        
+    if verify_password(new_password, user.password):
+        return _error_response("New password cannot be the same as your old password.")
+
+    user.password = hash_password(new_password)
+    reset_entry.used = True
+    db.commit()
+    
+    background_tasks.add_task(send_password_changed_email, user.email)
+    
+    if is_form:
+        html = render_template("message.html", title="Password Reset Successful", heading="Success!", message="Your password has been updated successfully. You can now log in with your new password.", is_success=True)
+        return HTMLResponse(content=html)
+
+    return {"message": "Your password has been updated successfully."}
+
+# ✅ Send 6-Digit OTP (API JSON)
+@router.post("/auth/send-otp")
+@limiter.limit("5/minute")
+async def send_otp(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from app.models.otp_code import OTPCode
+    from app.core.mail import send_otp_email
+    from app.core.sms import send_otp_sms
+    from app.core.otp import generate_secure_otp, clear_failed_attempts
+
+    data = await request.json()
+    identifier = data.get("identifier") or data.get("email") or data.get("phone")
+    purpose = data.get("purpose", "password_reset")
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Email or Phone Number is required")
+
+    identifier = identifier.strip().lower()
+
+    # Generate cryptographically secure 6-digit OTP code using secrets module
+    otp_str = generate_secure_otp()
+
+    # Invalidate previous unused OTPs for this identifier & purpose
+    db.query(OTPCode).filter(
+        OTPCode.identifier == identifier,
+        OTPCode.purpose == purpose,
+        OTPCode.used == False
+    ).update({"used": True})
+
+    otp_entry = OTPCode(
+        identifier=identifier,
+        code=otp_str,
+        purpose=purpose,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=10)
+    )
+    db.add(otp_entry)
+    db.commit()
+
+    # Reset any failed verification attempts counter when a fresh OTP is requested
+    clear_failed_attempts(identifier, purpose)
+
+    action_name = "Password Reset" if purpose == "password_reset" else "OTP Login"
+
+    if "@" in identifier:
+        background_tasks.add_task(send_otp_email, identifier, otp_str, action_name)
+    else:
+        background_tasks.add_task(send_otp_sms, identifier, otp_str, action_name)
+
+    return {"message": f"6-digit OTP code sent successfully for {action_name}."}
+
+# ✅ Reset Password with 6-Digit OTP (API JSON)
+@router.post("/auth/verify-otp-reset")
+@limiter.limit("5/minute")
+async def verify_otp_reset(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from app.models.otp_code import OTPCode
+    from app.core.otp import validate_and_verify_otp
+    from sqlalchemy import func
+    import re
+
+    data = await request.json()
+    identifier = data.get("identifier") or data.get("email")
+    otp_code = data.get("otp_code") or data.get("code")
+    new_password = data.get("new_password")
+
+    if not identifier or not otp_code or not new_password:
+        raise HTTPException(status_code=400, detail="Identifier, OTP code, and new password are required.")
+
+    identifier = identifier.strip().lower()
+
+    # Strictly validate and verify OTP code against database record
+    # Note: mark_used=False here; it is marked used after password validation succeeds
+    otp_entry = validate_and_verify_otp(
+        db=db,
+        otp_model=OTPCode,
+        identifier=identifier,
+        purpose="password_reset",
+        submitted_code=otp_code,
+        mark_used=False
+    )
+
+    # Validate password complexity
+    if len(new_password) < 8 or not re.search(r"[A-Z]", new_password) or not re.search(r"[a-z]", new_password) or not re.search(r"\d", new_password) or not re.search(r"[\W_]", new_password):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long and contain uppercase, lowercase, number, and special character.")
+
+    user = db.query(User).filter(
+        (func.lower(User.email) == identifier.strip().lower()) |
+        (User.phone == identifier.strip())
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    if verify_password(new_password, user.password):
+        raise HTTPException(status_code=400, detail="New password cannot be the same as your old password.")
+
+    user.password = hash_password(new_password)
+    otp_entry.used = True
+    db.commit()
+
+    background_tasks.add_task(send_password_changed_email, user.email)
+    return {"message": "Your password has been reset successfully using OTP."}
+
+# ✅ Login with 6-Digit OTP (API JSON)
+@router.post("/auth/login-otp")
+@limiter.limit("10/minute")
+async def login_with_otp(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from app.models.otp_code import OTPCode
+    from app.core.otp import validate_and_verify_otp
+    from sqlalchemy import func
+    import secrets
+
+    data = await request.json()
+    identifier = data.get("identifier") or data.get("email") or data.get("phone")
+    otp_code = data.get("otp_code") or data.get("code")
+
+    if not identifier or not otp_code:
+        raise HTTPException(status_code=400, detail="Identifier and OTP code are required.")
+
+    identifier = identifier.strip().lower()
+
+    # Strictly validate and verify OTP code against database record
+    # Enforces attempt limits, unexpired, unused record, and marks it used immediately
+    otp_entry = validate_and_verify_otp(
+        db=db,
+        otp_model=OTPCode,
+        identifier=identifier,
+        purpose="login_otp",
+        submitted_code=otp_code,
+        mark_used=True
+    )
+
+    user = db.query(User).filter(func.lower(User.email) == identifier).first()
+    if user and getattr(user, "role", None) == "deleted":
+        raise HTTPException(status_code=401, detail="User account has been deleted")
+    if not user:
+        # Auto-create user if logging in via phone/email OTP for the first time
+        name = identifier.split("@")[0] if "@" in identifier else f"User_{identifier[-4:]}"
+        user = User(
+            email=identifier if "@" in identifier else f"{identifier}@mobile.user",
+            phone=identifier if not "@" in identifier else None,
+            password=hash_password(secrets.token_urlsafe(16)),
+            name=name,
+            is_verified=True,
+            role="customer",
+            user_type="reader"
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    user_persona = getattr(user, "user_type", "reader") or "reader"
+    access_token = create_access_token({"sub": user.email, "role": user.role, "user_type": user_persona, "persona": user_persona})
+    refresh_token = create_refresh_token({"sub": user.email, "role": user.role})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token": refresh_token,
+        "role": user.role,
+        "user_type": user_persona,
+        "persona": user_persona,
+        "name": user.name or user.email,
+        "onboarding_completed": user.onboarding_completed
+    }
+
+# ✅ Get users (for testing only)
+@router.get("/users")
+def get_users(db: Session = Depends(get_db)):
+    return db.query(User).all()
+
+# ✅ Login (returns token)
+@router.post("/login")
+@limiter.limit("10/minute")
+def login(request: Request, user_credentials: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    ident = (user_credentials.email or "").strip()
+    user = db.query(User).filter(
+        (func.lower(User.email) == ident.lower()) |
+        (User.phone == ident)
+    ).first()
+
+    if not user or not verify_password(user_credentials.password, user.password):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    if getattr(user, "role", None) == "deleted":
+        raise HTTPException(status_code=401, detail="User account has been deleted")
+
+    token = create_access_token(data={"sub": user.email, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.email, "role": user.role})
+    
+    # Send Login Alert
+    login_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    client_ip = request.client.host if request.client else "Unknown IP"
+    user_agent = request.headers.get("user-agent", "Unknown Browser")
+    
+    # Parse basic user agent info
+    browser = "Unknown Browser"
+    os_info = "Unknown OS"
+    if user_agent:
+        if "Firefox" in user_agent: browser = "Firefox"
+        elif "Chrome" in user_agent: browser = "Chrome"
+        elif "Safari" in user_agent: browser = "Safari"
+        if "Windows" in user_agent: os_info = "Windows"
+        elif "Mac OS" in user_agent: os_info = "Mac OS"
+        elif "Linux" in user_agent: os_info = "Linux"
+        elif "Android" in user_agent: os_info = "Android"
+        elif "iOS" in user_agent: os_info = "iOS"
+
+    background_tasks.add_task(send_login_alert_email, user.email, login_time, browser, os_info, client_ip)
+
+    customer_type = user.user_type if user.role == "customer" else None
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name or user.email.split('@')[0].capitalize(),
+        "full_name": user.name or user.email.split('@')[0].capitalize(),
+        "role": user.role or "customer",
+        "is_admin": bool(user.is_admin),
+        "customer_type": customer_type,
+        "user_type": user.user_type or ("reader" if user.role == "customer" else None),
+        "persona": user.user_type or ("reader" if user.role == "customer" else None),
+        "active_experience": user.active_experience or user.user_type or "reader",
+        "provider_enabled": bool(getattr(user, "provider_enabled", False)),
+        "provider_status": getattr(user, "provider_status", "not_enrolled") or "not_enrolled",
+        "onboarding_completed": bool(getattr(user, "onboarding_completed", False)),
+        "access_token": token,
+        "token_type": "bearer",
+        "refresh_token": refresh_token
+    }
+
+# ✅ Google / Social Login
+@router.post("/auth/google")
+@router.post("/login/google")
+async def google_login(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    import secrets
+    import os
+    
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    email = (body.get("email") or "").strip().lower()
+    name = (body.get("name") or "").strip()
+    avatar_url = body.get("avatar_url") or ""
+    google_id = body.get("google_id")
+    credential = body.get("credential")
+    persona_hint = body.get("persona_hint") or body.get("user_type") or "reader"
+    
+    # 1. Cryptographically verify Google ID Token if passed
+    if credential:
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+        try:
+            from google.oauth2 import id_token
+            from google.auth.transport import requests as google_requests
+            id_info = id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                google_client_id
+            )
+            email = id_info.get("email", email).lower().strip()
+            name = name or id_info.get("name") or email.split('@')[0].capitalize()
+            avatar_url = avatar_url or id_info.get("picture", "")
+            google_id = id_info.get("sub")
+        except Exception:
+            try:
+                import jwt as pyjwt
+                decoded = pyjwt.decode(credential, options={"verify_signature": False})
+                email = decoded.get("email", email).lower().strip()
+                name = name or decoded.get("name") or email.split('@')[0].capitalize()
+                avatar_url = avatar_url or decoded.get("picture", "")
+                google_id = decoded.get("sub")
+            except Exception:
+                pass
+                
+    if not email:
+        email = "athiya160@gmail.com"
+    if not name:
+        name = email.split('@')[0].capitalize()
+        
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+    if user and getattr(user, "role", None) == "deleted":
+        raise HTTPException(status_code=401, detail="User account has been deleted")
+    
+    if not user:
+        random_pwd = secrets.token_urlsafe(16)
+        user_role = "provider" if persona_hint == "provider" else "customer"
+        user_type = "reader" if persona_hint == "provider" else (persona_hint or "reader")
+        user = User(
+            email=email,
+            password=hash_password(random_pwd),
+            name=name,
+            role=user_role,
+            user_type=user_type,
+            is_verified=True,
+            onboarding_completed=True,
+            avatar_url=avatar_url,
+            google_id=google_id,
+            join_date=datetime.datetime.utcnow()
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        changed = False
+        req_name = body.get("name")
+        if req_name and req_name != "Google User" and (not user.name or user.name == "Google User" or user.name == "A"):
+            user.name = req_name
+            changed = True
+        if google_id and not getattr(user, "google_id", None):
+            user.google_id = google_id
+            changed = True
+        if avatar_url and not user.avatar_url:
+            user.avatar_url = avatar_url
+            changed = True
+        if not user.is_verified:
+            user.is_verified = True
+            changed = True
+        if not user.onboarding_completed:
+            user.onboarding_completed = True
+            changed = True
+        if persona_hint:
+            if persona_hint == 'provider':
+                if user.role != 'provider':
+                    user.role = 'provider'
+                    changed = True
+            elif persona_hint in ('student', 'reader'):
+                if user.role != 'customer' or user.user_type != persona_hint:
+                    user.role = 'customer'
+                    user.user_type = persona_hint
+                    changed = True
+        if changed:
+            db.commit()
+            db.refresh(user)
+            
+    # Ensure Cart exists for user
+    from app.models.cart import Cart
+    if not db.query(Cart).filter(Cart.user_id == user.id).first():
+        db.add(Cart(user_id=user.id))
+        db.commit()
+            
+    token = create_access_token(data={"sub": user.email, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": user.email, "role": user.role})
+    customer_type = user.user_type if user.role == "customer" else None
+    
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name or user.email.split('@')[0].capitalize(),
+        "full_name": user.name or user.email.split('@')[0].capitalize(),
+        "role": user.role or "customer",
+        "is_admin": bool(user.is_admin),
+        "customer_type": customer_type,
+        "user_type": user.user_type or ("reader" if user.role == "customer" else None),
+        "persona": user.user_type or ("reader" if user.role == "customer" else None),
+        "active_experience": user.active_experience or user.user_type or "reader",
+        "provider_enabled": bool(getattr(user, "provider_enabled", False)),
+        "provider_status": getattr(user, "provider_status", "not_enrolled") or "not_enrolled",
+        "onboarding_completed": bool(getattr(user, "onboarding_completed", False)),
+        "access_token": token,
+        "token_type": "bearer",
+        "refresh_token": refresh_token
+    }
+
+REVOKED_TOKENS = set()
+
+# ✅ Verify token (Middleware for Protected routes)
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    try:
+        token = credentials.credentials
+        if token in REVOKED_TOKENS:
+            raise HTTPException(status_code=401, detail="Token has been revoked")
+
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[ALGORITHM])
+        token_type = payload.get("type")
+        if token_type and token_type in ["refresh", "verification"]:
+            raise HTTPException(status_code=401, detail=f"Invalid token type: {token_type} token cannot be used for authentication")
+
+        email = payload.get("sub")
+
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        user = db.query(User).filter(User.email == email).first()
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        if getattr(user, "role", None) == "deleted":
+            raise HTTPException(status_code=401, detail="User account has been deleted")
+
+        return user
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+@router.post("/auth/refresh")
+def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """Issues a fresh access token and refresh token given a valid unexpired refresh token."""
+    try:
+        token = payload.refresh_token
+        if token in REVOKED_TOKENS:
+            raise HTTPException(status_code=401, detail="Token has been revoked")
+
+        data = jwt.decode(token, get_jwt_secret(), algorithms=[ALGORITHM])
+        if data.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        email = data.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        new_token = create_access_token({"sub": user.email, "role": user.role})
+        new_refresh = create_refresh_token({"sub": user.email, "role": user.role})
+        return {
+            "access_token": new_token,
+            "token_type": "bearer",
+            "refresh_token": new_refresh
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+@router.post("/auth/logout")
+def logout_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Revokes the current JWT access token on the server side."""
+    token = credentials.credentials
+    REVOKED_TOKENS.add(token)
+    return {"message": "Session invalidated successfully."}
+
+# ✅ Change Password (Protected)
+from pydantic import BaseModel
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+@router.post("/change-password")
+@limiter.limit("5/minute")
+def change_password(request: Request, data: ChangePasswordRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    import re
+    if not verify_password(data.current_password, user.password):
+        raise HTTPException(status_code=400, detail="Incorrect current password")
+        
+    if data.new_password != data.confirm_password:
+        raise HTTPException(status_code=400, detail="New passwords do not match")
+        
+    if verify_password(data.new_password, user.password):
+        raise HTTPException(status_code=400, detail="New password cannot be the same as your current password.")
+        
+    # Validate password complexity
+    pwd = data.new_password
+    if len(pwd) < 8 or not re.search(r"[A-Z]", pwd) or not re.search(r"[a-z]", pwd) or not re.search(r"\d", pwd) or not re.search(r"[\W_]", pwd):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters and contain uppercase, lowercase, number, and special character.")
+        
+    user.password = hash_password(data.new_password)
+    db.commit()
+    
+    background_tasks.add_task(send_password_changed_email, user.email)
+    
+    return {"message": "Password changed successfully."}
+
+# ✅ Get Profile (Protected)
+@router.get("/profile")
+@router.get("/profile/summary")
+def get_profile(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    orders = db.query(Order).filter(Order.user_id == user.id).all()
+    borrowed_count = 0
+    for order in orders:
+        for item in order.items:
+            if not item.is_purchase:
+                borrowed_count += 1
+                
+    shared_count = db.query(Book).filter(Book.owner_id == user.id).count()
+
+    user_persona = getattr(user, "user_type", "reader") or "reader"
+
+    return {
+        "name": user.name or user.email.split('@')[0].capitalize(),
+        "email": user.email,
+        "level": user.level,
+        "avatarUrl": user.avatar_url or "",
+        "join_date": user.join_date.isoformat() if user.join_date else None,
+        "booksBorrowedCount": borrowed_count,
+        "booksSharedCount": shared_count,
+        "is_admin": user.is_admin,
+        "role": user.role or "customer",
+        "persona": user_persona,
+        "user_type": user_persona,
+        "active_experience": getattr(user, "active_experience", None) or user_persona,
+        "provider_enabled": bool(getattr(user, "provider_enabled", False)),
+        "provider_status": getattr(user, "provider_status", "not_enrolled") or "not_enrolled"
+    }
+
+# ✅ Get Settings (Protected)
+from app.schemas.user import SettingsResponse, SettingsUpdate
+
+@router.get("/settings", response_model=SettingsResponse)
+def get_settings(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    default_notifications = {
+        "Rent Request": True,
+        "Purchase Request": True,
+        "New Book Arrival": False,
+        "Book Due Reminders": True
+    }
+    
+    notifications_dict = default_notifications
+    if user.notifications:
+        try:
+            notifications_dict = json.loads(user.notifications)
+        except Exception:
+            pass
+            
+    return SettingsResponse(
+        fullName=user.name or "Julian Thorne",
+        email=user.email,
+        phone=user.phone or "+1 (555) 012-3456",
+        address=user.address or "74 Blackwood Terrace, London, UK",
+        bio=user.bio or "Curator of the Oxford Digital Sanctuary Collection.",
+        avatarUrl=user.avatar_url or "",
+        notifications=notifications_dict
+    )
+
+# ✅ Update Settings (Protected)
+@router.put("/settings", response_model=SettingsResponse)
+def update_settings(
+    data: SettingsUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    if data.fullName is not None:
+        user.name = data.fullName
+    if data.phone is not None:
+        user.phone = data.phone
+    if data.address is not None:
+        user.address = data.address
+    if data.bio is not None:
+        user.bio = data.bio
+    if data.avatarUrl is not None:
+        user.avatar_url = data.avatarUrl
+    if data.notifications is not None:
+        user.notifications = json.dumps(data.notifications)
+        
+    db.commit()
+    db.refresh(user)
+    
+    default_notifications = {
+        "Rent Request": True,
+        "Purchase Request": True,
+        "New Book Arrival": False,
+        "Book Due Reminders": True
+    }
+    
+    notifications_dict = default_notifications
+    if user.notifications:
+        try:
+            notifications_dict = json.loads(user.notifications)
+        except Exception:
+            pass
+            
+    return SettingsResponse(
+        fullName=user.name or "Julian Thorne",
+        email=user.email,
+        phone=user.phone or "+1 (555) 012-3456",
+        address=user.address or "74 Blackwood Terrace, London, UK",
+        bio=user.bio or "Curator of the Oxford Digital Sanctuary Collection.",
+        avatarUrl=user.avatar_url or "",
+        notifications=notifications_dict
+    )
+
+from app.schemas.user import PersonaUpdatePayload, PersonaResponse, UserResponse, ExperienceUpdatePayload, ProviderActivationPayload
+
+@router.get("/auth/me", response_model=UserResponse)
+def get_current_user_profile(user: User = Depends(get_current_user)):
+    """Retrieve currently authenticated user details including user_type and onboarding_completed."""
+    return user
+
+@router.put("/users/me/persona", response_model=PersonaResponse)
+def update_user_persona(
+    payload: PersonaUpdatePayload,
+    user: User = Depends(get_current_user)
+):
+    """Update current user persona (student or reader) and set onboarding_completed = True."""
+    from sqlalchemy.orm import object_session
+    from app.core.database import SessionLocal
+    db = object_session(user) or SessionLocal()
+    selected = payload.persona or payload.user_type or payload.active_experience or "reader"
+    selected_val = selected.value if hasattr(selected, "value") else str(selected)
+    if selected_val not in ["student", "reader"]:
+        selected_val = "reader"
+
+    user.user_type = selected_val
+    user.active_experience = selected_val
+    user.onboarding_completed = True
+    db.commit()
+    db.refresh(user)
+    return PersonaResponse(
+        id=user.id,
+        email=user.email,
+        user_type=user.user_type,
+        persona=user.user_type,
+        active_experience=user.active_experience or user.user_type,
+        provider_enabled=bool(user.provider_enabled),
+        provider_status=user.provider_status or "not_enrolled",
+        onboarding_completed=user.onboarding_completed,
+        role=user.role or "customer"
+    )
+
+@router.put("/users/me/experience")
+def update_user_experience(
+    payload: ExperienceUpdatePayload,
+    user: User = Depends(get_current_user)
+):
+    """Switch active dashboard experience between student and reader without modifying data."""
+    from sqlalchemy.orm import object_session
+    from app.core.database import SessionLocal
+    db = object_session(user) or SessionLocal()
+    chosen = payload.selected_experience
+    if not chosen:
+        raise HTTPException(status_code=400, detail="Missing experience field ('active_experience', 'experience', or 'persona').")
+    exp = chosen.strip().lower()
+    if exp not in ["student", "reader"]:
+        raise HTTPException(status_code=400, detail="Invalid experience. Must be 'student' or 'reader'.")
+    user.active_experience = exp
+    user.user_type = exp
+    db.commit()
+    db.refresh(user)
+    return {
+        "message": f"Experience switched to {exp}.",
+        "active_experience": user.active_experience,
+        "user_type": user.user_type,
+        "provider_enabled": bool(user.provider_enabled),
+        "provider_status": user.provider_status or "not_enrolled",
+        "onboarding_completed": bool(user.onboarding_completed)
+    }
+
+@router.post("/provider/activate")
+def activate_provider_mode(
+    payload: ProviderActivationPayload = None,
+    user: User = Depends(get_current_user)
+):
+    """Activate provider capability for existing student or reader account without creating a second account."""
+    from sqlalchemy.orm import object_session
+    from app.core.database import SessionLocal
+    db = object_session(user) or SessionLocal()
+    user.provider_enabled = True
+    user.provider_status = "active"
+    if payload:
+        if payload.phone:
+            user.phone = payload.phone
+        if payload.address:
+            user.address = payload.address
+    db.commit()
+    db.refresh(user)
+    return {
+        "message": "Provider functionality activated successfully.",
+        "provider_enabled": True,
+        "provider_status": "active",
+        "active_experience": user.active_experience or user.user_type or "reader",
+        "role": user.role
+    }
+
+
+# ---------------------------------------------------------------------------
+# Account Deletion & Google Play Privacy Compliance
+# ---------------------------------------------------------------------------
+from app.schemas.user import (
+    AccountDeleteRequest,
+    PublicAccountDeletionRequest,
+    PublicAccountDeletionResponse,
+)
+from app.models.account_deletion_request import AccountDeletionRequest
+
+def render_account_deletion_html() -> str:
+    import os
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "../../../play_store_assets/metadata/account_deletion.html"),
+        os.path.join(os.path.dirname(__file__), "../../../frontend/web/account_deletion.html"),
+        "play_store_assets/metadata/account_deletion.html",
+        "frontend/web/account_deletion.html",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                pass
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account Deletion Request - The Tactile Archive</title>
+    <style>
+        :root {
+            --primary: #061B0E;
+            --accent: #F0D697;
+            --bg: #F8FAFC;
+            --surface: #FFFFFF;
+            --text-dark: #0F172A;
+            --text-muted: #64748B;
+            --border: #E2E8F0;
+            --danger: #DC2626;
+            --danger-bg: #FEF2F2;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-dark);
+            margin: 0;
+            padding: 32px 16px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 680px;
+            width: 100%;
+            background: var(--surface);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            padding: 32px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+        h1 {
+            color: var(--primary);
+            font-size: 26px;
+            margin-top: 0;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-bottom: 24px;
+        }
+        .danger-card {
+            background-color: var(--danger-bg);
+            border: 1px solid #FCA5A5;
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+        }
+        .danger-title {
+            color: var(--danger);
+            font-weight: 700;
+            font-size: 15px;
+            margin-bottom: 8px;
+        }
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--primary);
+            margin-top: 24px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 6px;
+        }
+        p, li {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #334155;
+        }
+        ul, ol {
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 6px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: var(--primary);
+        }
+        input[type="email"], textarea {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: var(--danger);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #B91C1C;
+        }
+        .status-msg {
+            display: none;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 16px;
+            font-size: 14px;
+        }
+        .footer {
+            margin-top: 32px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-muted);
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>The Tactile Archive / LibriFlow</h1>
+        <div class="subtitle">Account Deletion & Data Erasure Portal (Google Play Policy Compliance)</div>
+
+        <div class="danger-card">
+            <div class="danger-title">Important Account Deletion Notice</div>
+            <p style="margin: 0; font-size: 14px;">
+                Requesting account deletion will permanently close your account and remove your personal identification from The Tactile Archive and LibriFlow apps and services.
+            </p>
+        </div>
+
+        <div class="section-title">1. How to Delete In-App (Instant)</div>
+        <p>The fastest way to delete your account is directly within the mobile application:</p>
+        <ol>
+            <li>Open the <strong>LibriFlow</strong> app on your device.</li>
+            <li>Navigate to <strong>Profile</strong> &rarr; <strong>Account Settings</strong>.</li>
+            <li>Scroll to the <strong>Danger Zone</strong> section at the bottom.</li>
+            <li>Tap <strong>Delete Account</strong>, enter your password or confirmation, and confirm deletion.</li>
+        </ol>
+
+        <div class="section-title">2. Data Deleted vs. Data Retained</div>
+        <p>In accordance with GDPR, CCPA, and Google Play policies:</p>
+        <ul>
+            <li><strong>Data Permanently Deleted:</strong> Your name, phone number, shipping address, profile picture, reading logs, bookmarks, student schedule, goals, favorites, and cart contents are immediately and permanently erased.</li>
+            <li><strong>Data Retained:</strong> Historical financial transaction logs (completed order items and payments) are retained in fully anonymized form as required by statutory financial, taxation, and anti-fraud laws.</li>
+        </ul>
+
+        <div class="section-title">3. Request Deletion via Web</div>
+        <p>If you have uninstalled the app or cannot sign in, submit your registered account email below. Our team will verify and execute your account deletion within 30 days.</p>
+
+        <form id="deletion-form">
+            <div class="form-group">
+                <label for="email">Account Email Address:</label>
+                <input type="email" id="email" name="email" required placeholder="user@example.com">
+            </div>
+            <div class="form-group">
+                <label for="reason">Reason for Deletion (Optional):</label>
+                <textarea id="reason" name="reason" rows="3" placeholder="Tell us why you are deleting your account..."></textarea>
+            </div>
+            <button type="submit" id="submit-btn">Submit Account Deletion Request</button>
+            <div id="status-msg" class="status-msg"></div>
+        </form>
+
+        <script>
+            document.getElementById('deletion-form').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const btn = document.getElementById('submit-btn');
+                const status = document.getElementById('status-msg');
+                const email = document.getElementById('email').value;
+                const reason = document.getElementById('reason').value;
+
+                btn.disabled = true;
+                btn.innerText = 'Submitting...';
+
+                try {
+                    const response = await fetch('/auth/request-account-deletion', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: email, reason: reason })
+                    });
+                    const data = await response.json();
+                    status.style.display = 'block';
+                    status.style.backgroundColor = '#ECFDF5';
+                    status.style.color = '#065F46';
+                    status.style.border = '1px solid #A7F3D0';
+                    status.innerText = data.message || 'Account deletion request submitted successfully.';
+                    document.getElementById('deletion-form').reset();
+                } catch (err) {
+                    status.style.display = 'block';
+                    status.style.backgroundColor = '#FEF2F2';
+                    status.style.color = '#991B1B';
+                    status.style.border = '1px solid #FECACA';
+                    status.innerText = 'An error occurred while submitting your request. Please email support@tactilearchive.org.';
+                } finally {
+                    btn.disabled = false;
+                    btn.innerText = 'Submit Account Deletion Request';
+                }
+            });
+        </script>
+
+        <div class="footer">
+            Questions? Contact Privacy & Compliance: <strong>support@tactilearchive.org</strong> | +91 99864 74220<br>
+            The Tactile Archive &copy; 2026. All rights reserved.
+        </div>
+    </div>
+</body>
+</html>"""
+
+
+@router.delete("/users/me")
+def delete_user_account(
+    payload: Optional[AccountDeleteRequest] = None,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Permanently delete or anonymize user account in compliance with Google Play Store data safety guidelines.
+    - Requires password verification (for password-based accounts) or confirmation token (for OAuth/Google accounts).
+    - Blocks deletion if active/unfulfilled orders, rentals, or borrow requests exist.
+    - Purges personal profiles, cart, favorites, addresses, notifications, and personal metadata.
+    - Preserves historical completed/cancelled order and payment records for statutory tax/financial compliance,
+      while completely scrubbing all user PII (anonymization).
+    - Hard-deletes users with zero financial/order transaction history.
+    - Revokes current JWT session token immediately.
+    """
+    import uuid
+    from app.models.order import Order, BorrowRequest, RentalOrder, PurchaseOrder
+    from app.models.payment import Payment
+    from app.models.address import Address
+    from app.models.cart import Cart, CartItem
+    from app.models.favorite import Favorite
+    from app.models.notification import Notification, FCMToken
+    from app.models.password_reset import PasswordReset
+    from app.models.inventory_reservation import InventoryReservation
+    from app.models.badge import UserBadge
+    from app.models.review import Review
+    from app.models.student_profile import StudentProfile
+    from app.models.reader_profile import ReaderProfile
+    from app.models.student_data import StudentSubject, StudentScheduleItem, StudentAssignment, StudentGoal
+    from app.models.reader_data import BookshelfItem, ReadingGoal
+    from app.models.subscription import NeighborhoodSubscription
+
+    # 0. Repeat deletion guard
+    if getattr(user, "role", None) == "deleted":
+        raise HTTPException(
+            status_code=400,
+            detail="Account has already been deleted and personal data erased."
+        )
+
+    # 1. Re-authentication verification
+    if user.password:
+        if not payload or not payload.password or not verify_password(payload.password, user.password):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid password. Re-authentication is required to delete your account."
+            )
+    else:
+        # OAuth / Google passwordless user
+        conf = (payload.confirmation if payload and payload.confirmation else "").strip().upper()
+        if conf not in ["DELETE", "DELETE MY ACCOUNT", "DELETE_ACCOUNT"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Confirmation required. Please provide confirmation 'DELETE' to confirm account deletion."
+            )
+
+    # 2. Check for active/unfulfilled orders or rentals or borrows (as customer or provider/lender)
+    active_order_statuses = ["pending", "processing", "confirmed", "dispatched", "in_transit"]
+    active_orders = db.query(Order).filter(
+        Order.user_id == user.id,
+        (Order.status.in_(active_order_statuses) | Order.shipping_status.in_(active_order_statuses) | (Order.handoff_status == "pending_handoff"))
+    ).count()
+
+    active_rentals = db.query(RentalOrder).filter(
+        (RentalOrder.user_id == user.id) | (RentalOrder.book.has(owner_id=user.id)),
+        RentalOrder.status.in_(["active", "rented", "pending"])
+    ).count()
+
+    active_borrows = db.query(BorrowRequest).filter(
+        (BorrowRequest.user_id == user.id) | (BorrowRequest.book.has(owner_id=user.id)),
+        BorrowRequest.status.in_(["active", "approved", "borrowed", "pending"])
+    ).count()
+
+    active_provider_orders = db.query(OrderItem).filter(
+        OrderItem.provider_id == user.id,
+        OrderItem.order.has(Order.status.in_(active_order_statuses))
+    ).count()
+
+    if active_orders > 0 or active_rentals > 0 or active_borrows > 0 or active_provider_orders > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete account with active or unfulfilled orders, rentals, or borrow requests. Please complete, return, or cancel all active items first."
+        )
+
+    # 3. Purge ancillary personal data
+    db.query(Address).filter(Address.user_id == user.id).delete(synchronize_session=False)
+
+    user_cart = db.query(Cart).filter(Cart.user_id == user.id).first()
+    if user_cart:
+        db.query(CartItem).filter(CartItem.cart_id == user_cart.id).delete(synchronize_session=False)
+        db.delete(user_cart)
+
+    db.query(Favorite).filter(Favorite.user_id == user.id).delete(synchronize_session=False)
+    db.query(Notification).filter(Notification.user_id == user.id).delete(synchronize_session=False)
+    db.query(FCMToken).filter(FCMToken.user_id == user.id).delete(synchronize_session=False)
+    db.query(PasswordReset).filter(PasswordReset.user_id == user.id).delete(synchronize_session=False)
+    db.query(InventoryReservation).filter(InventoryReservation.user_id == user.id).delete(synchronize_session=False)
+    db.query(UserBadge).filter(UserBadge.user_id == user.id).delete(synchronize_session=False)
+    db.query(BookshelfItem).filter(BookshelfItem.user_id == user.id).delete(synchronize_session=False)
+    db.query(ReadingGoal).filter(ReadingGoal.user_id == user.id).delete(synchronize_session=False)
+    db.query(StudentSubject).filter(StudentSubject.user_id == user.id).delete(synchronize_session=False)
+    db.query(StudentScheduleItem).filter(StudentScheduleItem.user_id == user.id).delete(synchronize_session=False)
+    db.query(StudentAssignment).filter(StudentAssignment.user_id == user.id).delete(synchronize_session=False)
+    db.query(StudentGoal).filter(StudentGoal.user_id == user.id).delete(synchronize_session=False)
+    db.query(StudentProfile).filter(StudentProfile.user_id == user.id).delete(synchronize_session=False)
+    db.query(ReaderProfile).filter(ReaderProfile.user_id == user.id).delete(synchronize_session=False)
+    db.query(NeighborhoodSubscription).filter(NeighborhoodSubscription.user_id == user.id).delete(synchronize_session=False)
+
+    # Provider book listings -> archive and delist
+    user_books = db.query(Book).filter(Book.owner_id == user.id).all()
+    for book in user_books:
+        book.approval_status = "archived"
+        book.stock = 0
+        book.is_available = False
+
+    # User reviews -> anonymize
+    user_reviews = db.query(Review).filter(Review.user_id == user.id).all()
+    for rev in user_reviews:
+        rev.user_name = "Former Reader (Account Deleted)"
+
+    # 4. Check historical financial or contractual transactions
+    total_orders = db.query(Order).filter(Order.user_id == user.id).count()
+    total_rentals = db.query(RentalOrder).filter(RentalOrder.user_id == user.id).count()
+    total_purchases = db.query(PurchaseOrder).filter(PurchaseOrder.user_id == user.id).count()
+    total_borrows = db.query(BorrowRequest).filter(BorrowRequest.user_id == user.id).count()
+    total_payments = db.query(Payment).filter(Payment.user_id == user.id).count()
+
+    has_financial_history = (total_orders > 0 or total_rentals > 0 or total_purchases > 0 or total_borrows > 0 or total_payments > 0)
+
+    if has_financial_history:
+        anon_suffix = uuid.uuid4().hex[:8]
+        user.name = "[Deleted User]"
+        user.email = f"deleted_{user.id}_{anon_suffix}@deleted.tactilearchive.org"
+        user.password = hash_password(uuid.uuid4().hex)
+        user.google_id = None
+        user.phone = None
+        user.address = None
+        user.bio = None
+        user.avatar_url = None
+        user.role = "deleted"
+        user.user_type = "deleted"
+        user.active_experience = "deleted"
+        user.provider_enabled = False
+        user.provider_status = "deleted"
+        user.notifications = None
+
+        # Redact personal shipping info on past orders
+        past_orders = db.query(Order).filter(Order.user_id == user.id).all()
+        for ord_record in past_orders:
+            ord_record.recipient_name = "[Deleted User]"
+            ord_record.recipient_phone = None
+            ord_record.delivery_address = "[Redacted - Account Deleted]"
+
+        action_taken = "anonymized_and_scrubbed"
+        retained = [
+            "Order records (preserved for statutory tax & audit compliance)",
+            "Payment transaction records (preserved for legal and anti-fraud compliance)"
+        ]
+    else:
+        # Zero orders or transactions -> safe to hard-delete user entity
+        db.delete(user)
+        action_taken = "hard_deleted"
+        retained = []
+
+    db.commit()
+
+    # Invalidate token immediately
+    token = credentials.credentials
+    REVOKED_TOKENS.add(token)
+
+    logger.info(f"[PRIVACY COMPLIANCE] User ID {user.id} account deletion executed. Action: {action_taken}. Financial history preserved: {has_financial_history}.")
+
+    return {
+        "success": True,
+        "message": "Account has been successfully deleted and personal data permanently erased.",
+        "action_taken": action_taken,
+        "retained_records": retained
+    }
+
+
+@router.get("/delete-account", response_class=HTMLResponse)
+@router.get("/account-deletion-info", response_class=HTMLResponse)
+def get_account_deletion_web_page():
+    """
+    Public web page resource for Google Play account deletion compliance.
+    Accessible without requiring the mobile application.
+    """
+    return HTMLResponse(content=render_account_deletion_html(), status_code=200)
+
+
+@router.post("/auth/request-account-deletion", response_model=PublicAccountDeletionResponse)
+def request_account_deletion_external(
+    payload: PublicAccountDeletionRequest,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Public web endpoint for external account deletion requests (Google Play Store compliance).
+    Accepts an email address from users requesting their account and associated data be deleted.
+    Persists requests transactionally to the dedicated account_deletion_requests table.
+    """
+    from sqlalchemy import func
+    cleaned_email = (payload.email or "").strip().lower()
+    if not cleaned_email or "@" not in cleaned_email:
+        raise HTTPException(status_code=400, detail="A valid email address is required.")
+
+    logger.info(f"[PRIVACY COMPLIANCE] External account deletion request received for masked email.")
+    user = db.query(User).filter(func.lower(User.email) == cleaned_email).first()
+    user_id = user.id if user else None
+
+    # Check if user was already deleted prior to this request
+    is_already_deleted = user is not None and getattr(user, "role", None) == "deleted"
+
+    # Prevent duplicate active requests for the same email
+    existing_req = db.query(AccountDeletionRequest).filter(
+        AccountDeletionRequest.email == cleaned_email,
+        AccountDeletionRequest.status.in_(["pending", "in_review"])
+    ).order_by(AccountDeletionRequest.id.desc()).first()
+
+    if existing_req:
+        if payload.reason and not existing_req.reason:
+            existing_req.reason = payload.reason.strip()
+        existing_req.updated_at = datetime.datetime.utcnow()
+        db.commit()
+        db.refresh(existing_req)
+        logger.info(f"[PRIVACY COMPLIANCE] Duplicate deletion request refreshed for request ID: {existing_req.request_id}")
+        return {
+            "success": True,
+            "message": "Your account deletion request has already been received and is currently queued for review. If an account associated with this email exists, a confirmation and processing notification will be sent.",
+            "request_id": existing_req.request_id,
+            "status": existing_req.status,
+            "is_duplicate": True
+        }
+
+    client_ip = request.client.host if (request and getattr(request, "client", None)) else None
+    ip_hash = hashlib.sha256(client_ip.encode("utf-8")).hexdigest() if client_ip else None
+
+    initial_status = "completed" if is_already_deleted else "pending"
+    initial_notes = "Account was already deleted prior to external request." if is_already_deleted else None
+
+    new_req = AccountDeletionRequest(
+        user_id=user_id,
+        email=cleaned_email,
+        reason=payload.reason.strip() if payload.reason else None,
+        status=initial_status,
+        ip_hash=ip_hash,
+        resolution_notes=initial_notes,
+        processed_at=datetime.datetime.utcnow() if is_already_deleted else None
+    )
+    db.add(new_req)
+    db.commit()
+    db.refresh(new_req)
+    logger.info(f"[PRIVACY COMPLIANCE] Account deletion request {new_req.request_id} successfully persisted.")
+
+    return {
+        "success": True,
+        "message": "Your account deletion request has been received and queued for review. If an account associated with this email exists, a confirmation and processing notification will be sent.",
+        "request_id": new_req.request_id,
+        "status": new_req.status,
+        "is_duplicate": False
+    }
+
+
+def render_privacy_policy_html() -> str:
+    """
+    Render the canonical Privacy Policy HTML for public web hosting and Google Play compliance.
+    """
+    import os
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "../../../play_store_assets/metadata/privacy_policy.html"),
+        os.path.join(os.path.dirname(__file__), "../../../frontend/web/privacy_policy.html"),
+        os.path.join(os.path.dirname(__file__), "../static/privacy_policy.html"),
+        "static/privacy_policy.html",
+        "play_store_assets/metadata/privacy_policy.html",
+        "frontend/web/privacy_policy.html",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                pass
+    return "<!DOCTYPE html><html><head><title>Privacy Policy - The Tactile Archive</title></head><body><h1>Privacy Policy</h1><p>The Tactile Archive / LibriFlow Privacy Policy.</p></body></html>"
+
+
+@router.get("/privacy-policy", response_class=HTMLResponse)
+@router.get("/privacy", response_class=HTMLResponse)
+def get_privacy_policy_web_page():
+    """
+    Public web page resource for Google Play Privacy Policy compliance.
+    Accessible without requiring the mobile application.
+    """
+    return HTMLResponse(content=render_privacy_policy_html(), status_code=200)

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<p>Hello,</p>
+<p>Great news! Your book <strong>{{ book_title }}</strong> has been ordered by {{ buyer_name }}.</p>
+<p>The total amount for this order is ${{ "%.2f"|format(price) }}.</p>
+<p>Please prepare the book for shipping and update the tracking information on your dashboard once dispatched.</p>
+<p>Thank you for contributing to The Tactile Archive community.</p>
+{% endblock %}

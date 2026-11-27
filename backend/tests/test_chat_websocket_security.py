@@ -1,0 +1,493 @@
+"""
+Phase 20.40 — Comprehensive Chat & WebSocket Authorization Security Test Suite.
+Validates:
+1. Unauthenticated HTTP chat access rejection (401).
+2. Authenticated HTTP assistant chat execution.
+3. Unauthenticated WebSocket connection rejection (WS_1008).
+4. Rejection of insecure query-parameter credentials (?token=...).
+5. Rejection of invalid, malformed, expired, and revoked tokens (WS_1008).
+6. Authorized buyer access, messaging, and pinned order isolation.
+7. Authorized provider access for assigned orders.
+8. Authorized platform administrator access.
+9. Unauthorized third-party rejection (WS_1008).
+10. Cross-order access prevention (switching order IDs).
+11. Browser subprotocol (Sec-WebSocket-Protocol) authentication.
+12. Non-existent order rejection.
+"""
+
+import os
+import sys
+from datetime import datetime, timedelta
+import pytest
+from jose import jwt
+from fastapi import status, WebSocketDisconnect, HTTPException
+
+# Ensure backend root is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from app.core.security import SECRET_KEY, ALGORITHM
+from app.api.auth import hash_password, create_access_token, REVOKED_TOKENS, get_current_user
+from app.api.chat import (
+    chat_endpoint,
+    websocket_peer_chat,
+    extract_websocket_token,
+    authenticate_websocket_token,
+    check_order_access,
+    ChatRequest,
+    ChatResponse,
+    ws_manager,
+)
+from app.models.user import User
+from app.models.order import Order, OrderItem
+from app.models.book import Book
+from app.core.database import Base
+import app.api.chat
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+TEST_CHAT_DB = "scratch/disposable_test_chat_ws.db"
+test_chat_engine = create_engine(f"sqlite:///{TEST_CHAT_DB}", connect_args={"check_same_thread": False})
+TestChatSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_chat_engine)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def setup_chat_db():
+    os.makedirs("scratch", exist_ok=True)
+    if os.path.exists(TEST_CHAT_DB):
+        try:
+            os.remove(TEST_CHAT_DB)
+        except Exception:
+            pass
+    Base.metadata.create_all(bind=test_chat_engine)
+    orig_session_local = app.api.chat.SessionLocal
+    app.api.chat.SessionLocal = TestChatSessionLocal
+    yield
+    app.api.chat.SessionLocal = orig_session_local
+    test_chat_engine.dispose()
+    if os.path.exists(TEST_CHAT_DB):
+        try:
+            os.remove(TEST_CHAT_DB)
+        except Exception:
+            pass
+
+
+class MockWebSocket:
+    """Mock ASGI WebSocket implementing FastAPI/Starlette WebSocket interface."""
+
+    def __init__(self, headers=None, query_params=None, incoming=None):
+        self.headers = headers or {}
+        self.query_params = query_params or {}
+        self.accepted = False
+        self.subprotocol = None
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.sent_messages = []
+        self.incoming_messages = list(incoming or [])
+
+    async def accept(self, subprotocol=None):
+        self.accepted = True
+        self.subprotocol = subprotocol
+
+    async def close(self, code=1000, reason=None):
+        self.closed = True
+        self.close_code = code
+        self.close_reason = reason
+
+    async def send_json(self, message):
+        self.sent_messages.append(message)
+
+    async def receive_json(self):
+        if self.incoming_messages:
+            return self.incoming_messages.pop(0)
+        raise WebSocketDisconnect(code=1000)
+
+
+@pytest.fixture
+def db():
+    session = TestChatSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def seed_chat_data(db):
+    """Creates isolated buyer, provider, admin, thirdparty users and test orders."""
+    # 1. Buyer
+    buyer = db.query(User).filter(User.email == "chat_buyer_2040@test.com").first()
+    if not buyer:
+        buyer = User(
+            email="chat_buyer_2040@test.com",
+            password=hash_password("Pass123!"),
+            name="Alice Buyer",
+            role="customer",
+            user_type="reader",
+            is_verified=True,
+            onboarding_completed=True
+        )
+        db.add(buyer)
+        db.commit()
+        db.refresh(buyer)
+
+    # 2. Provider
+    provider = db.query(User).filter(User.email == "chat_provider_2040@test.com").first()
+    if not provider:
+        provider = User(
+            email="chat_provider_2040@test.com",
+            password=hash_password("Pass123!"),
+            name="Bob Provider",
+            role="provider",
+            user_type="reader",
+            provider_enabled=True,
+            provider_status="active",
+            is_verified=True,
+            onboarding_completed=True
+        )
+        db.add(provider)
+        db.commit()
+        db.refresh(provider)
+
+    # 3. Administrator
+    admin = db.query(User).filter(User.email == "chat_admin_2040@test.com").first()
+    if not admin:
+        admin = User(
+            email="chat_admin_2040@test.com",
+            password=hash_password("Pass123!"),
+            name="Charlie Admin",
+            role="admin",
+            is_admin=True,
+            is_verified=True,
+            onboarding_completed=True
+        )
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
+
+    # 4. Third-Party User (not part of Order 1)
+    thirdparty = db.query(User).filter(User.email == "chat_thirdparty_2040@test.com").first()
+    if not thirdparty:
+        thirdparty = User(
+            email="chat_thirdparty_2040@test.com",
+            password=hash_password("Pass123!"),
+            name="Eve Intruder",
+            role="customer",
+            user_type="reader",
+            is_verified=True,
+            onboarding_completed=True
+        )
+        db.add(thirdparty)
+        db.commit()
+        db.refresh(thirdparty)
+
+    # 5. Book owned by Provider
+    book = db.query(Book).filter(Book.title == "Test Architecture 2040").first()
+    if not book:
+        book = Book(
+            title="Test Architecture 2040",
+            author="Author X",
+            price=299.0,
+            stock=5,
+            owner_id=provider.id
+        )
+        db.add(book)
+        db.commit()
+        db.refresh(book)
+
+    # 6. Order 1: Buyer purchased Book from Provider
+    order1 = db.query(Order).filter(Order.delivery_address == "Order 2040 Test Address 1").first()
+    if not order1:
+        order1 = Order(
+            user_id=buyer.id,
+            status="processing",
+            total_items=1,
+            total_amount=299.0,
+            delivery_address="Order 2040 Test Address 1",
+            payment_status="paid"
+        )
+        db.add(order1)
+        db.commit()
+        db.refresh(order1)
+
+        item1 = OrderItem(
+            order_id=order1.id,
+            book_id=book.id,
+            provider_id=provider.id,
+            book_title=book.title,
+            price=299.0,
+            quantity=1
+        )
+        db.add(item1)
+        db.commit()
+
+    # 7. Order 2: Third-party's private order
+    order2 = db.query(Order).filter(Order.delivery_address == "Order 2040 Test Address 2").first()
+    if not order2:
+        order2 = Order(
+            user_id=thirdparty.id,
+            status="processing",
+            total_items=1,
+            total_amount=150.0,
+            delivery_address="Order 2040 Test Address 2",
+            payment_status="paid"
+        )
+        db.add(order2)
+        db.commit()
+        db.refresh(order2)
+
+    buyer_token = create_access_token({"sub": buyer.email, "role": buyer.role})
+    provider_token = create_access_token({"sub": provider.email, "role": provider.role})
+    admin_token = create_access_token({"sub": admin.email, "role": admin.role})
+    thirdparty_token = create_access_token({"sub": thirdparty.email, "role": thirdparty.role})
+
+    # Expired token (1 hour ago)
+    expired_token = jwt.encode(
+        {"sub": buyer.email, "role": buyer.role, "exp": datetime.utcnow() - timedelta(hours=1)},
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    # Revoked token
+    revoked_token = create_access_token({"sub": buyer.email, "role": buyer.role, "nonce": "revoked_test"})
+    REVOKED_TOKENS.add(revoked_token)
+
+    return {
+        "buyer": buyer,
+        "provider": provider,
+        "admin": admin,
+        "thirdparty": thirdparty,
+        "order1": order1,
+        "order2": order2,
+        "buyer_token": buyer_token,
+        "provider_token": provider_token,
+        "admin_token": admin_token,
+        "thirdparty_token": thirdparty_token,
+        "expired_token": expired_token,
+        "revoked_token": revoked_token,
+        "invalid_token": "malformed.bearer.token_value_xyz"
+    }
+
+
+# ---------------------------------------------------------------------------
+# Test Cases: HTTP /chat Authorization & Assistant
+# ---------------------------------------------------------------------------
+
+def test_http_chat_unauthenticated_dependency(db):
+    """Unauthenticated calls to get_current_user raise 401 Unauthorized."""
+    from fastapi.security import HTTPAuthorizationCredentials
+    # 1. Invalid token raises 401
+    bad_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token.123")
+    with pytest.raises(HTTPException) as exc:
+        get_current_user(bad_creds, db)
+    assert exc.value.status_code == 401
+
+    # 2. Revoked token raises 401
+    revoked_token = create_access_token({"sub": "revoked_user@test.com"})
+    REVOKED_TOKENS.add(revoked_token)
+    revoked_creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=revoked_token)
+    with pytest.raises(HTTPException) as exc:
+        get_current_user(revoked_creds, db)
+    assert exc.value.status_code == 401
+    assert "revoked" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_http_chat_authenticated(seed_chat_data):
+    """Authenticated user receives valid ChatResponse from /chat."""
+    buyer = seed_chat_data["buyer"]
+    req = ChatRequest(message="Can you recommend a clean code book?")
+    res = await chat_endpoint(req, user=buyer)
+    assert isinstance(res, ChatResponse)
+    assert len(res.reply) > 0
+
+
+@pytest.mark.asyncio
+async def test_http_chat_empty_message_validation(seed_chat_data):
+    """Validates that empty messages are rejected with 400 Bad Request."""
+    buyer = seed_chat_data["buyer"]
+    req = ChatRequest(message="   ")
+    with pytest.raises(HTTPException) as exc:
+        await chat_endpoint(req, user=buyer)
+    assert exc.value.status_code == 400
+    assert "Message cannot be empty" in exc.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Test Cases: WebSocket Authentication & Insecure Credential Rejection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ws_unauthenticated(seed_chat_data):
+    """Unauthenticated WebSocket connection is immediately rejected with WS_1008."""
+    order_id = seed_chat_data["order1"].id
+    ws = MockWebSocket(headers={})
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Missing authentication" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_insecure_query_param_rejected(seed_chat_data):
+    """Insecure query parameter tokens (?token=...) are rejected; headers required."""
+    order_id = seed_chat_data["order1"].id
+    token = seed_chat_data["buyer_token"]
+    # Client passes token ONLY in query parameter, missing Authorization header
+    ws = MockWebSocket(headers={}, query_params={"token": token})
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Missing authentication credentials in headers" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_invalid_token(seed_chat_data):
+    """Malformed or signature-invalid tokens are rejected with WS_1008."""
+    order_id = seed_chat_data["order1"].id
+    ws = MockWebSocket(headers={"authorization": f"Bearer {seed_chat_data['invalid_token']}"})
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Invalid or malformed" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_expired_token(seed_chat_data):
+    """Expired tokens are rejected with WS_1008."""
+    order_id = seed_chat_data["order1"].id
+    ws = MockWebSocket(headers={"authorization": f"Bearer {seed_chat_data['expired_token']}"})
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Token has expired" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_revoked_token(seed_chat_data):
+    """Revoked server-side tokens are rejected with WS_1008."""
+    order_id = seed_chat_data["order1"].id
+    ws = MockWebSocket(headers={"authorization": f"Bearer {seed_chat_data['revoked_token']}"})
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Token has been revoked" in ws.close_reason
+
+
+# ---------------------------------------------------------------------------
+# Test Cases: Order Authorization (Buyer, Provider, Admin & Third-Party)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ws_authorized_buyer_access(seed_chat_data):
+    """Legitimate buyer is granted access and receives/broadcasts messages."""
+    order_id = seed_chat_data["order1"].id
+    token = seed_chat_data["buyer_token"]
+    ws = MockWebSocket(
+        headers={"authorization": f"Bearer {token}"},
+        incoming=[{"text": "Hello, when can I collect the book?"}]
+    )
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is True
+    assert ws.closed is False
+    # Verified broadcast payload contains pinned order_id, buyer identity and role
+    user_msg = next((m for m in ws.sent_messages if m.get("type") == "message"), None)
+    assert user_msg is not None
+    assert user_msg["order_id"] == order_id
+    assert user_msg["role"] == "buyer"
+    assert user_msg["text"] == "Hello, when can I collect the book?"
+
+
+@pytest.mark.asyncio
+async def test_ws_authorized_provider_access(seed_chat_data):
+    """Assigned provider is granted access and assigned role 'provider'."""
+    order_id = seed_chat_data["order1"].id
+    token = seed_chat_data["provider_token"]
+    ws = MockWebSocket(
+        headers={"authorization": f"Bearer {token}"},
+        incoming=[{"text": "Your book is packaged and ready at the hub."}]
+    )
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is True
+    assert ws.closed is False
+    user_msg = next((m for m in ws.sent_messages if m.get("type") == "message"), None)
+    assert user_msg is not None
+    assert user_msg["order_id"] == order_id
+    assert user_msg["role"] == "provider"
+    assert user_msg["text"] == "Your book is packaged and ready at the hub."
+
+
+@pytest.mark.asyncio
+async def test_ws_administrator_access(seed_chat_data):
+    """Platform administrator can access any order conversation."""
+    order_id = seed_chat_data["order1"].id
+    token = seed_chat_data["admin_token"]
+    ws = MockWebSocket(
+        headers={"authorization": f"Bearer {token}"},
+        incoming=[{"text": "Admin monitoring message."}]
+    )
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is True
+    assert ws.closed is False
+    user_msg = next((m for m in ws.sent_messages if m.get("type") == "message"), None)
+    assert user_msg is not None
+    assert user_msg["order_id"] == order_id
+    assert user_msg["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_ws_unauthorized_third_party_access(seed_chat_data):
+    """Unauthorized user attempting to connect to another user's order is rejected with WS_1008."""
+    order1_id = seed_chat_data["order1"].id
+    thirdparty_token = seed_chat_data["thirdparty_token"]
+    ws = MockWebSocket(headers={"authorization": f"Bearer {thirdparty_token}"})
+    await websocket_peer_chat(ws, order_id=order1_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Access denied" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_cross_order_access_prevention(seed_chat_data):
+    """Buyer of Order 1 is rejected when attempting to connect to Order 2."""
+    order2_id = seed_chat_data["order2"].id
+    buyer_token = seed_chat_data["buyer_token"]
+    ws = MockWebSocket(headers={"authorization": f"Bearer {buyer_token}"})
+    await websocket_peer_chat(ws, order_id=order2_id)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Access denied" in ws.close_reason
+
+
+@pytest.mark.asyncio
+async def test_ws_subprotocol_browser_auth(seed_chat_data):
+    """Browser clients using Sec-WebSocket-Protocol are authenticated cleanly."""
+    order_id = seed_chat_data["order1"].id
+    token = seed_chat_data["buyer_token"]
+    ws = MockWebSocket(
+        headers={"sec-websocket-protocol": f"bearer, {token}"},
+        incoming=[{"text": "Browser client connected."}]
+    )
+    await websocket_peer_chat(ws, order_id=order_id)
+    assert ws.accepted is True
+    assert ws.subprotocol == "bearer"
+    assert ws.closed is False
+
+
+@pytest.mark.asyncio
+async def test_ws_nonexistent_order_rejected(seed_chat_data):
+    """Connecting to a non-existent order ID is rejected with WS_1008."""
+    buyer_token = seed_chat_data["buyer_token"]
+    ws = MockWebSocket(headers={"authorization": f"Bearer {buyer_token}"})
+    await websocket_peer_chat(ws, order_id=987654)
+    assert ws.accepted is False
+    assert ws.closed is True
+    assert ws.close_code == status.WS_1008_POLICY_VIOLATION
+    assert "Order #987654 not found" in ws.close_reason

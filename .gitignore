@@ -1,0 +1,92 @@
+# Global Startup Gitignore
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+
+# IDE & Editor Settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment Variables & Secrets (Keep .env.example only)
+.env
+.env.dev
+.env.prod
+.env.*
+!*.env.example
+*service-account*.json
+*credentials*.json
+*.pem
+*.key
+*.keystore
+*.jks
+key.properties
+firebase-service-account.json
+
+# Python & FastAPI
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Databases & Storage
+*.sqlite3
+*.db
+app.db
+library.db
+
+# Testing & Coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+coverage.xml
+
+# Flutter & Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+flutter_log.txt
+*.log
+*.apk
+*.aab
+*.ipa
+
+# Node / JS Tooling
+node_modules/
+package-lock.json
+
+# Temporary & Analysis Dump Files
+*.txt
+!requirements.txt
+!runtime.txt
+!README.md

@@ -1,0 +1,3 @@
+@echo off
+echo Starting Flutter Web on fixed port 56894...
+flutter run -d chrome --web-port 56894
